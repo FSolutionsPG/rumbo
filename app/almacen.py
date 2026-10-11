@@ -65,9 +65,9 @@ def fmt_fecha(iso):
     return f"{iso[8:10]}/{iso[5:7]}/{iso[:4]}"
 
 
-def fmt_num(x):
-    """12345.6 -> '12.345,6' (hasta 4 decimales, sin ceros de sobra)."""
-    t = f"{x:,.4f}".rstrip("0").rstrip(".")
+def fmt_num(x, decimales=4):
+    """12345.6 -> '12.345,6' (hasta 4 decimales por defecto, sin ceros de sobra)."""
+    t = f"{x:,.{decimales}f}".rstrip("0").rstrip(".")
     return t.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
@@ -252,9 +252,11 @@ def guarda_movimiento(cfg, datos):
         errores.append("La comisión no puede ser mayor que el importe total.")
     if not errores and tipo == "venta" and cotiza and unidades:
         tenias = unidades_a(cfg, p["id"], f, excluir=datos.get("id"))
-        if unidades > tenias + 1e-6:
-            errores.append(f"El {fmt_fecha(f)} solo tenías {fmt_num(tenias)} unidades de "
-                           f"«{p.get('corto') or p['nombre']}» y estás vendiendo {fmt_num(unidades)}.")
+        if tenias > 0 and abs(unidades - tenias) <= 0.00005:
+            unidades = tenias      # vender todo: sin polvo residual por los decimales que no se ven
+        elif unidades > tenias + 1e-6:
+            errores.append(f"El {fmt_fecha(f)} solo tenías {fmt_num(tenias, 6)} unidades de "
+                           f"«{p.get('corto') or p['nombre']}» y estás vendiendo {fmt_num(unidades, 6)}.")
     if errores:
         raise ErrorValidacion(errores)
 

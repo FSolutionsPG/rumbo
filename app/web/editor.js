@@ -20,7 +20,7 @@
   const leeNum = t => {
     t = String(t || "").replace(/[€\s]/g, "");
     // "1.234,56" y "1.000" (mil) en castellano; "1234.5" también vale.
-    if (t.includes(",") || /^-?\d{1,3}(\.\d{3})+$/.test(t)) t = t.replace(/\./g, "").replace(",", ".");
+    if (t.includes(",") || /^-?[1-9]\d{0,2}(\.\d{3})+$/.test(t)) t = t.replace(/\./g, "").replace(",", ".");
     return parseFloat(t);
   };
   const nombre = p => p ? (p.corto || p.nombre) : "¿?";
@@ -415,7 +415,7 @@
         ${campo("Producto", `<select name="producto">${cotizables.map(p =>
           `<option value="${esc(p.id)}">${esc(nombre(p))}</option>`).join("")}</select>`, "", "ancho")}
         ${campo("Fecha", `<input type="date" name="fecha" max="${hoy()}">`)}
-        ${campo("Unidades", '<input name="unidades" inputmode="decimal" placeholder="0">', "participaciones, acciones…", "siUnid")}
+        ${campo("Unidades", '<input name="unidades" inputmode="decimal" placeholder="0">', '<span id="mPistaU">participaciones, acciones…</span><button type="button" id="mTodas" hidden style="all:unset;cursor:pointer;color:var(--s1);font-weight:600;text-decoration:underline"></button>', "siUnid")}
         ${campo("Importe total", '<div class="conSufijo"><input name="importe" inputmode="decimal" placeholder="0,00"><span>€</span></div>')}
         ${campo("Comisión", '<div class="conSufijo"><input name="comision" inputmode="decimal" placeholder="0,00"><span>€</span></div>', "ya incluida en el importe", "siCom")}
         ${campo("Nota", '<input name="nota" maxlength="200" placeholder="Por ejemplo: aportación mensual">', "opcional", "ancho")}
@@ -430,6 +430,20 @@
       return null;
     }, nuevo ? "Guardar movimiento" : "Guardar cambios");
     rellena(f, { ...m, unidades: decimal(m.unidades || ""), importe: decimal(m.importe), comision: decimal(m.comision) });
+    // Unidades que tenías ese día (igual que almacen.unidades_a), sin contar este mismo movimiento.
+    const teniasEl = (pid, dia) => {
+      let tot = 0;
+      for (const x of E.cfg.movimientos) {
+        if (x.producto !== pid || x.id === m.id || x.fecha > dia) continue;
+        const u = Number(x.unidades) || 0;
+        tot += x.tipo === "compra" ? u : x.tipo === "venta" ? -u : 0;
+      }
+      return Math.round(tot * 1e8) / 1e8;
+    };
+    f.querySelector("#mTodas").onclick = () => {
+      f.elements.unidades.value = f.querySelector("#mTodas").dataset.valor;
+      ajusta();
+    };
     const ajusta = () => {
       const t = f.elements.tipo.value;
       const p = prod(f.elements.producto.value);
@@ -439,6 +453,11 @@
       // Con la caja de unidades oculta, la del importe ocupa su hueco sin descuadrar la rejilla.
       $("#mAyuda").textContent = AYUDA_IMPORTE[t] + (p && manual(p) && t === "compra"
         ? " Como este producto se valora a mano, las unidades son opcionales." : "");
+      const todas = f.querySelector("#mTodas");
+      const tenias = t === "venta" && p && f.elements.fecha.value ? teniasEl(p.id, f.elements.fecha.value) : 0;
+      todas.hidden = !(tenias > 0);
+      f.querySelector("#mPistaU").hidden = tenias > 0;
+      if (tenias > 0) { todas.dataset.valor = decimal(tenias); todas.textContent = `Todas (${decimal(tenias)})`; }
       const u = leeNum(f.elements.unidades.value), imp = leeNum(f.elements.importe.value);
       const com = leeNum(f.elements.comision.value) || 0;
       $("#mPrecio").textContent = conUnid && u > 0 && imp > 0 ? `${num((imp - com) / u)} € / unidad` : "";
