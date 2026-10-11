@@ -277,6 +277,10 @@ def api_importar_previsualizar():
             if not archivos:
                 return jsonify(ok=False, errores=["Elige los archivos CSV que has descargado de MyInvestor."]), 400
             plan = importar.preparar_myinvestor(cfg, archivos, DATOS)
+        elif origen == "traderepublic":
+            if not archivos:
+                return jsonify(ok=False, errores=["Elige el CSV de transacciones que has exportado de Trade Republic."]), 400
+            plan = importar.preparar_traderepublic(cfg, archivos, DATOS)
         else:
             if not archivos and not texto:
                 return jsonify(ok=False, errores=["Elige un archivo o pega el texto que te ha dado la IA."]), 400

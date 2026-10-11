@@ -609,6 +609,7 @@
   const IMP = { origen: "myinvestor", informe: null, token: null, hecho: null, prompt: null, archivos: [] };
   const ICONOS = {
     myinvestor: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M5 21V10l7-5 7 5v11M9 21v-6h6v6"/></svg>',
+    traderepublic: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg>',
     plantilla: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/></svg>',
     ia: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 17l.8 2.2L22 20l-2.2.8L19 23l-.8-2.2L16 20l2.2-.8z"/></svg>',
   };
@@ -634,6 +635,13 @@
         ${zona(".csv", true, "Arrastra aquí los CSV de MyInvestor")}
         <p class="ayuda">Cada importación sustituye lo que importaste antes de ese mismo fondo: repítela cada mes sin miedo a duplicar.
           MyInvestor no permite descargar las órdenes de ETF o acciones: haz capturas y usa la opción «Con ayuda de una IA».</p>`;
+    } else if (IMP.origen === "traderepublic") {
+      paso = `<ol class="pasos">
+          <li>En la web de Trade Republic, exporta tus transacciones en CSV <b>desde que abriste la cuenta</b>.</li>
+          <li>No lo abras ni le cambies nada. Arrástralo aquí.</li></ol>
+        ${zona(".csv", false, "Arrastra aquí el CSV de Trade Republic")}
+        <p class="ayuda">Se importan compras, ventas, intereses y el saldo de efectivo. Tarjeta, transferencias y saveback no se guardan
+          (solo cuentan para calcular el saldo). Puedes repetirlo con un archivo que se solape: lo ya importado no se duplica.</p>`;
     } else if (IMP.origen === "plantilla") {
       paso = `<ol class="pasos">
           <li>Descarga la plantilla: <a class="btn" href="api/plantilla.xlsx" download>Excel</a>
@@ -656,6 +664,7 @@
         <span class="subt">Trae tus movimientos de golpe. Antes de guardar nada verás una vista previa.</span></header>
       <div class="imOps">
         ${op("myinvestor", "MyInvestor", "El CSV de cada fondo")}
+        ${op("traderepublic", "Trade Republic", "El CSV de transacciones")}
         ${op("plantilla", "Plantilla", "Excel o CSV, para cualquier banco")}
         ${op("ia", "Con ayuda de una IA", "Convierte el extracto de tu banco")}
       </div>
@@ -729,10 +738,17 @@
         <span>${esc(E.fuentes[p.fuente])}</span>${p.precio ? `<span>${num(p.precio)} ${esc(p.monedaPrecio)} · ${fecha(p.fechaPrecio)}</span>` : ""}</span></div>`).join("")}</div>` : "";
     const ESTADO = { nuevo: "Nuevo", repetido: "Ya estaba", error: "Con error" };
     const filas = inf.filas.map(f => `<tr class="est-${f.estado}"><td>${fecha(f.fecha)}</td>
-      <td style="text-align:left">${esc(f.productoNombre)}</td><td style="text-align:left">${esc(E.tiposMov[f.tipo] || "Saldo")}</td>
+      <td style="text-align:left">${esc(f.productoNombre)}${f.destinoNombre ? " → " + esc(f.destinoNombre) : ""}</td><td style="text-align:left">${esc(E.tiposMov[f.tipo] || "Saldo")}</td>
       <td>${f.unidades ? num(f.unidades) : "—"}</td><td>${eur(f.importe)}</td>
       <td style="text-align:left">${f.marcas.map(m => `<span class="etqImp">${esc(m)}</span>`).join("")}</td>
       <td><span class="estado">${ESTADO[f.estado]}</span></td></tr>`).join("");
+    const rs = inf.resumen;
+    const ign = rs ? Object.entries(rs.ignoradas).map(([k, v]) => `${v} ${esc(k)}`).join(" · ") : "";
+    const resumenTR = rs ? `<div class="cifras" style="margin-top:10px">
+        ${cifra("En el archivo", rs.filas, "filas")}${cifra("Compras", rs.compras)}${cifra("Ventas", rs.ventas)}
+        ${cifra("Intereses", rs.intereses)}${cifra("Traspasos", rs.traspasos)}
+        ${cifra("Saldo calculado", eur(rs.saldo))}</div>
+      ${ign ? `<p class="ayuda">No se importan (solo cuentan en el saldo): ${ign}.</p>` : ""}` : "";
     return `<section class="tarjeta"><header><h2>Vista previa</h2>
         <span class="subt">Todavía no se ha guardado nada.</span></header>
       <div class="cifras">
@@ -743,6 +759,7 @@
         ${inf.repetidos ? cifra("Ya estaban", inf.repetidos, "se omiten") : ""}
         ${inf.sustituidos ? cifra("Sustituyen a", inf.sustituidos, "importados antes") : ""}
       </div>
+      ${resumenTR}
       <div class="comprueba"><b>Compara estas cifras con tu banco antes de confirmar.</b>
         ${IMP.origen === "ia" ? "Una IA puede equivocarse al copiar números o saltarse alguna fila: revisa sobre todo el total invertido." : ""}</div>
       ${avisos}${errores}${nuevos}
