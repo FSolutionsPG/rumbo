@@ -43,9 +43,15 @@
     return;
   }
 
+  // Rango de los gráficos, compartido por las pestañas y recordado entre sesiones.
+  function rangoGuardado() {
+    const id = recuerda.lee("rumbo.rango");
+    return ["1m", "3m", "6m", "ytd", "1a"].includes(id) ? id : "todo";
+  }
+
   const estado = {
     tab: "patrimonio",
-    rango: "todo",
+    rango: rangoGuardado(),
     vista: "apilado",
     dist: "clase",
     fondo: null,
@@ -96,15 +102,15 @@
       caja("Has puesto de tu bolsillo", G.fmtEur(C.aportado[C.aportado.length - 1], 0), "compras menos ventas") +
       caja("Veredicto", veredicto, "", "veredicto");
     G.multiLinea($("#grafComparacion"), {
-      fechas: D.fechas, alto: 300,
+      fechas: corta(D.fechas), alto: 300,
       series: [
-        { nombre: "Tu cartera", valores: C.tuya, color: G.css("--s1"), destacado: true },
-        { nombre: "Con el " + r.nombre, valores: r.serie, color: G.css("--s2") },
-        { nombre: "Tu dinero puesto", valores: C.aportado, color: G.css("--tinta3") },
+        { nombre: "Tu cartera", valores: corta(C.tuya), color: G.css("--s1"), destacado: true },
+        { nombre: "Con el " + r.nombre, valores: corta(r.serie), color: G.css("--s2") },
+        { nombre: "Tu dinero puesto", valores: corta(C.aportado), color: G.css("--tinta3") },
       ],
       formatoY: v => G.fmtEurCorto(v),
       formatoValor: v => G.fmtEur(v, 0),
-      desdeCero: true,
+      desdeCero: estado.rango === "todo",
     });
     const ley = (c, t) => `<span class="leyItem"><i style="background:${G.css(c)}"></i>${t}</span>`;
     $("#compNota").innerHTML = `<span class="leyComp">${ley("--s1", "Tu cartera")}${ley("--s2", "Con el " + r.nombre)}${ley("--tinta3", "Tu dinero puesto")}</span>
@@ -284,6 +290,20 @@
     return Math.max(0, n - 1 - r.dias);
   }
   const corta = arr => (arr || []).slice(desdeIdx());
+
+  // Cambia el rango (único para todas las pestañas), lo recuerda y repinta la pestaña visible.
+  function ponRango(id) {
+    estado.rango = id;
+    recuerda.guarda("rumbo.rango", id);
+    pintarTab();
+  }
+
+  // Base 100 en el primer día visible de la serie (los null iniciales no cuentan).
+  function rebasa100(arr) {
+    const v = corta(arr);
+    const base = v.find(x => x != null && x !== 0);
+    return base == null ? v : v.map(x => x == null ? null : x / base * 100);
+  }
 
   function pintaSegm(cont, opciones, activo, alPulsar) {
     if (!cont) return;
@@ -615,7 +635,7 @@
     pintaHitos(mTodo);
     pintaProyeccion();
     pintaTabla();
-    pintaSegm($("#segRango"), RANGOS, estado.rango, id => { estado.rango = id; pintaPatrimonio(); });
+    pintaSegm($("#segRango"), RANGOS, estado.rango, ponRango);
     pintaSegm($("#segVista"), [
       { id: "apilado", et: "Por producto" }, { id: "total", et: "Total" },
       { id: "dinero", et: "Tu dinero vs mercado" }, { id: "reparto", et: "Reparto %" }
@@ -773,6 +793,7 @@
         <h2><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${color(p)};margin-right:9px"></span>${p.nombre}</h2>
         <div class="sep"></div>
         ${hayVL ? '<div class="segm" id="segSerie"></div>' : ""}
+        <div class="segm" id="segRangoFicha"></div>
       </header>
       ${p.papel ? `<div class="papel">${p.papel}</div>` : ""}
       ${p.indiceDetalle ? `<p style="color:var(--tinta2);font-size:13.5px;margin:0 0 16px">${p.indiceDetalle}</p>` : ""}
@@ -813,6 +834,7 @@
     }
     $("#ventanas").innerHTML = html;
 
+    pintaSegm($("#segRangoFicha"), RANGOS, estado.rango, ponRango);
     if (hayVL) {
       pintaSegm($("#segSerie"),
         [{ id: "posicion", et: "Mi posición" }, { id: "vl", et: etqVL }],
@@ -832,7 +854,7 @@
     G.lineaConEventos($("#grafFondo"), {
       fechas,
       valores: corta(verVL ? p.navSerie : p.serie),
-      color: color(p), alto: 280, eventos, desdeCero: !verVL,
+      color: color(p), alto: 280, eventos, desdeCero: !verVL && estado.rango === "todo",
       overlay: verVL ? null : ((p.serieAportado || []).some(v => v)
         ? { nombre: "Aportado", valores: corta(p.serieAportado) } : null),
       formatoY: verVL ? (v => G.fmtEur(v, v > 500 ? 0 : 2)) : null,
@@ -959,6 +981,7 @@
           `<td class="${v == null ? "" : v >= 0 ? "pos" : "neg"}">${G.fmtPctSigno(v, 1)}</td>`).join("")}</tr></tfoot>`);
     }
 
+    pintaSegm($("#segRangoComp"), RANGOS, estado.rango, ponRango);
     pintaComparacion();
 
     const comp = D.comparador || [];
@@ -972,16 +995,18 @@
       const met0 = comp[0].metricas;
       const paleta = [G.css("--s1"), G.css("--s2"), G.css("--s3"), G.css("--s4"), G.css("--s5"), G.css("--s7"), G.css("--s6")];
       const series = comp.map((c, i) => ({
-        nombre: c.nombre, valores: c.indice, destacado: c.real,
+        nombre: c.nombre, valores: rebasa100(c.indice), destacado: c.real,
         color: c.real ? G.css("--tinta") : paleta[(i + 1) % paleta.length],
       }));
       G.multiLinea($("#grafComparador"), {
-        fechas: D.fechas, series, alto: 320,
+        fechas: corta(D.fechas), series, alto: 320,
+        desdeCero: false,
         formatoY: v => Math.round(v),
         formatoValor: v => v.toFixed(1),
       });
       $("#notaComparador").textContent =
-        `Base 100 desde el ${G.fmtFecha(met0.desde)}. Las alternativas son comprar y mantener con pesos fijos.`;
+        (estado.rango === "todo" ? `Base 100 desde el ${G.fmtFecha(met0.desde)}.`
+          : "Base 100 en el primer día del rango elegido: se ve lo que rindió cada cartera en ese periodo.") + ` Las alternativas son comprar y mantener con pesos fijos.`;
       $("#tablaComparador").innerHTML =
         `<thead><tr><th>Cartera</th><th>Rentabilidad</th><th>Anualizada</th>
           <th>Volatilidad</th><th>Sharpe</th><th>Máx. caída</th></tr></thead>
