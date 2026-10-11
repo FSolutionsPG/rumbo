@@ -6,6 +6,9 @@ la base es la del autor (`danidm98/rumbo`).
 
 ## [Sin publicar]
 
+### Añadido
+- **Importar de Trade Republic**: el CSV de transacciones crea compras, ventas (comisión y retención incluidas), intereses netos y la cuenta «Trade Republic (efectivo)» con su saldo calculado. Los cambios entre fondos sin pasar por efectivo entran como traspaso, marcados para revisar. Las compras con tarjeta y las transferencias no se guardan: solo cuentan para el saldo.
+
 ## [1.1.1-fs.1] - 2026-10-11
 
 ### Añadido
