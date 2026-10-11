@@ -73,6 +73,9 @@ def rango_fechas(desde, hasta):
     return out
 
 
+MILES_ES = r"-?[1-9]\d{0,2}(\.\d{3})+"
+
+
 def num_es(txt):
     """Convierte '1.399,89' o '3352,6' o '13.25' en float."""
     t = (txt or "").strip().replace(" ", "").replace(" ", "").replace("€", "")
@@ -82,8 +85,8 @@ def num_es(txt):
         t = t.replace(".", "").replace(",", ".")
     elif "," in t:
         t = t.replace(",", ".")
-    elif re.fullmatch(r"-?\d{1,3}(\.\d{3})+", t):
-        t = t.replace(".", "")        # "1.000" en castellano es mil, no uno
+    elif re.fullmatch(MILES_ES, t):
+        t = t.replace(".", "")        # "1.000" en castellano es mil, no uno (pero "0.123" nunca es un millar)
     try:
         return float(t)
     except ValueError:

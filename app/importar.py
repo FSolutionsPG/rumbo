@@ -221,7 +221,9 @@ def lee_fecha(v):
         return None
 
 
-def lee_numero(v):
+def lee_numero(v, punto_decimal=False, avisos=None):
+    """punto_decimal: ninguna cifra de la tabla lleva coma, así que el punto es decimal.
+    Si eso cambia un valor con forma de millar ('1.250'), se anota en `avisos` (una lista)."""
     if v is None or (isinstance(v, str) and not v.strip()):
         return None
     if isinstance(v, (int, float)):
@@ -229,7 +231,25 @@ def lee_numero(v):
     t = str(v).strip().replace("€", "").replace("$", "").replace(" ", "")
     if not re.fullmatch(r"[-+]?[\d.,]+", t):
         return "error"
+    if punto_decimal and "," not in t and t.count(".") == 1:
+        try:
+            x = abs(float(t))
+        except ValueError:
+            return abs(num_es(t))
+        if avisos is not None and re.fullmatch(motor.MILES_ES, t.lstrip("+")):
+            avisos.append(t)
+        return x
     return abs(num_es(t))
+
+
+def _punto_es_decimal(filas):
+    """True si ninguna cifra de texto de la tabla lleva coma (lo que pide el prompt de la IA)."""
+    for _, f in filas:
+        for k in ("importe", "unidades", "comision"):
+            v = f.get(k)
+            if isinstance(v, str) and "," in v:
+                return False
+    return True
 
 
 # ---------------------------------------------------------------- preparar el plan
@@ -338,13 +358,15 @@ def preparar_tabla(cfg, filas, carpeta):
     plan = Plan()
     res = Resolutor(cfg, plan, carpeta)
     cambios = {}
+    punto = _punto_es_decimal(filas)
+    leidos = []
     for n, f in filas:
         fecha = lee_fecha(f.get("fecha"))
         tipo = TIPO_MOV.get(sin_tildes(f.get("tipo_movimiento")))
         ident = str(f.get("identificador") or "").strip()
         nombre = str(f.get("nombre") or "").strip()
         tprod = TIPO_PROD.get(sin_tildes(f.get("tipo_producto")), "")
-        importe, unidades, comision = (lee_numero(f.get(k)) for k in ("importe", "unidades", "comision"))
+        importe, unidades, comision = (lee_numero(f.get(k), punto, leidos) for k in ("importe", "unidades", "comision"))
         moneda = (str(f.get("moneda") or "").strip() or "EUR").upper()
         nota = str(f.get("nota") or "").strip()
 
@@ -402,7 +424,18 @@ def preparar_tabla(cfg, filas, carpeta):
                                  "unidades": unidades, "importe": round(importe, 2),
                                  "comision": round(comision, 2) if comision else None,
                                  "nota": nota, "marcas": marcas, "origen": "importado"})
+    if leidos:
+        ej = leidos[0]
+        plan.avisos.append(f"He leído el punto como decimal ({ej} = {_en_palabras(ej)}). Si tu archivo usa "
+                           "el punto para los miles, revisa los totales antes de importar.")
     return plan
+
+
+def _en_palabras(t):
+    """'1.250' -> 1,25 (sin ceros finales); solo para el aviso."""
+    ent, dec = t.lstrip("-+").split(".")
+    dec = dec.rstrip("0")
+    return f"{ent},{dec}" if dec else ent
 
 
 def preparar_myinvestor(cfg, archivos, carpeta):
