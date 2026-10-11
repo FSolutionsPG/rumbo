@@ -41,7 +41,8 @@ SINONIMOS = {
 TIPO_MOV = {
     "compra": "compra", "suscripcion": "compra", "buy": "compra", "aportacion": "compra",
     "venta": "venta", "reembolso": "venta", "sell": "venta",
-    "dividendo": "dividendo", "cupon": "dividendo", "dividend": "dividendo", "interes": "dividendo",
+    "dividendo": "dividendo", "cupon": "dividendo", "dividend": "dividendo",
+    "interes": "interes", "intereses": "interes",
     "comision": "comision", "fee": "comision", "custodia": "comision",
     "saldo": "saldo", "valor": "saldo", "valoracion": "saldo",
 }
@@ -378,7 +379,7 @@ def preparar_tabla(cfg, filas, carpeta):
             continue
         if not tipo:
             plan.error(n, f"El tipo de movimiento «{f.get('tipo_movimiento') or ''}» no es válido: "
-                          "usa compra, venta, dividendo, comision o saldo.")
+                          "usa compra, venta, dividendo, interes, comision o saldo.")
             continue
         if "error" in (importe, unidades, comision):
             plan.error(n, "Algún número no se entiende (importe, unidades o comisión).")
@@ -389,11 +390,18 @@ def preparar_tabla(cfg, filas, carpeta):
         if not ident and not nombre:
             plan.error(n, "No tiene identificador: pon el ISIN o el ticker (o, si es una cuenta, su nombre).")
             continue
-        if tipo == "saldo" and not ident:
+        if tipo in ("saldo", "interes") and not ident:
             tprod = tprod or "efectivo"
         ref = res.producto(n, ident, nombre, tprod)
         if not ref:
             continue
+        if tipo == "interes":
+            # Interés de una cuenta remunerada -> «interes»; en cualquier otro producto
+            # (cupón de un bono, por ejemplo) sigue siendo un dividendo.
+            if (res.datos(ref) or {}).get("tipo") == "efectivo":
+                unidades, comision = None, None
+            else:
+                tipo = "dividendo"
         marcas = []
 
         # Importes en otra moneda: se pasan a euros con el cambio de ese día.

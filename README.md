@@ -222,7 +222,7 @@ Reglas para cada columna:
 - identificador: el ISIN si aparece (12 caracteres, como IE00BYX5NX33); si no, el ticker (como AAPL). Para cuentas bancarias, déjalo vacío.
 - nombre: el nombre del producto o de la cuenta, tal y como aparece.
 - tipo_producto: una de estas palabras: fondo, etf, accion, cripto, commodity, bono, pension, efectivo, inmueble, deuda, otro.
-- tipo_movimiento: una de estas palabras: compra, venta, dividendo, comision, saldo. Usa «saldo» solo para el saldo de una cuenta en una fecha.
+- tipo_movimiento: una de estas palabras: compra, venta, dividendo, comision, saldo, interes. Usa «saldo» solo para el saldo de una cuenta en una fecha, e «interes» para los intereses que te paga una cuenta remunerada (en tipo_producto, efectivo; importe neto cobrado).
 - unidades: participaciones, acciones o unidades compradas o vendidas, en positivo y con punto decimal. Déjalo vacío si no aparece.
 - importe: el dinero total de la operación, en positivo, con punto decimal y sin símbolo de moneda. En una compra, lo que salió de la cuenta con las comisiones incluidas; en una venta o un dividendo, lo que entró.
 - moneda: la moneda del importe (EUR, USD…).
@@ -232,7 +232,7 @@ Reglas para cada columna:
 Importante:
 - Una fila por operación, ordenadas por fecha.
 - No inventes nada: si un dato no aparece en el extracto, deja esa casilla vacía.
-- No incluyas nóminas, recibos, gastos del día a día ni transferencias entre mis propias cuentas.
+- No incluyas nóminas, recibos, gastos del día a día ni transferencias entre mis propias cuentas. Los intereses que paga una cuenta remunerada SÍ se incluyen (interes).
 
 EXTRACTO:
 [Pega aquí tu extracto o adjunta los PDF o capturas. ANTES, BORRA o tapa tu nombre, DNI, IBAN, números de cuenta y tarjeta, dirección y cualquier dato personal: solo hacen falta fechas, productos e importes.]

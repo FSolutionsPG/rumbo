@@ -370,7 +370,8 @@
 
   /* ---------------------------------------------- movimientos */
   function vistaMovimientos() {
-    const cotizables = E.cfg.productos.filter(p => !soloSaldo(p));
+    // El filtro incluye también las cuentas que tienen intereses anotados.
+    const cotizables = E.cfg.productos.filter(p => !soloSaldo(p) || E.cfg.movimientos.some(m => m.producto === p.id));
     const movs = E.cfg.movimientos
       // Un traspaso es un solo movimiento (en el origen) pero se ve también en la lista del destino.
       .filter(m => E.filtro === "todos" || m.producto === E.filtro || (m.tipo === "traspaso" && m.destino === E.filtro))
@@ -392,7 +393,7 @@
           <button data-acc="borrarMov" data-id="${esc(m.id)}">Borrar</button></td></tr>`;
     }).join("");
     return `<section class="tarjeta"><header><h2>Movimientos</h2>
-        <span class="subt">Compras, ventas, dividendos, comisiones y traspasos</span><span class="sp"></span>
+        <span class="subt">Compras, ventas, dividendos, intereses, comisiones y traspasos</span><span class="sp"></span>
         <select id="edFiltro" aria-label="Filtrar por producto"><option value="todos">Todos los productos</option>
           ${cotizables.map(p => `<option value="${esc(p.id)}"${p.id === E.filtro ? " selected" : ""}>${esc(nombre(p))}</option>`).join("")}</select>
         <button class="btn prim" data-acc="nuevoMov">+ Añadir movimiento</button></header>
@@ -408,21 +409,28 @@
     venta: "Lo que te ingresaron, ya descontadas las comisiones.",
     dividendo: "Lo que te ingresaron por el dividendo o el cupón.",
     comision: "Comisiones sueltas, como la de custodia. Las de compra y venta ya van dentro de su importe.",
+    interes: "Lo que te ha pagado la cuenta, ya descontada la retención.",
     traspaso: "Lo que valía lo traspasado ese día. El destino hereda el coste y la fecha de cada compra: no se cuenta como venta ni como dinero que metes.",
   };
 
-  function formMovimiento(m, productoId) {
+  function formMovimiento(m, productoId, tipoInicial) {
     const cotizables = E.cfg.productos.filter(p => !soloSaldo(p));
-    if (!cotizables.length) { alert("Primero añade un producto en «Productos»."); return; }
+    // Los intereses solo van en cuentas (tipo «efectivo»): con ese tipo, el selector enseña solo ellas.
+    const cuentas = E.cfg.productos.filter(p => p.tipo === "efectivo");
+    if (!cotizables.length && !cuentas.length) { alert("Primero añade un producto en «Productos»."); return; }
     const nuevo = !m;
-    m = m || { fecha: hoy(), tipo: "compra", producto: productoId || (E.filtro !== "todos" ? E.filtro : cotizables[0].id) };
-    const pildoras = Object.entries(E.tiposMov).map(([k, v]) =>
+    const tipo0 = tipoInicial || (cotizables.length ? "compra" : "interes");
+    const lista0 = tipo0 === "interes" ? cuentas : cotizables;
+    m = m || { fecha: hoy(), tipo: tipo0, producto: productoId ||
+      (E.filtro !== "todos" && lista0.some(p => p.id === E.filtro) ? E.filtro : (lista0[0] || cotizables[0]).id) };
+    const lista = m.tipo === "interes" ? cuentas : cotizables;
+    const opcionesProducto = l => l.map(p => `<option value="${esc(p.id)}">${esc(nombre(p))}</option>`).join("");
+    const pildoras = Object.entries(E.tiposMov).filter(([k]) => k !== "interes" || cuentas.length).map(([k, v]) =>
       `<label><input type="radio" name="tipo" value="${esc(k)}"><span>${esc(k === "dividendo" ? "Dividendo" : v)}</span></label>`).join("");
     const f = abreModal(nuevo ? "Añadir movimiento" : "Editar movimiento", `
       <div class="pildoras">${pildoras}</div>
       <div class="rejilla" style="margin-top:18px">
-        ${campo("Producto", `<select name="producto">${cotizables.map(p =>
-          `<option value="${esc(p.id)}">${esc(nombre(p))}</option>`).join("")}</select>`, "", "ancho")}
+        ${campo("Producto", `<select name="producto">${opcionesProducto(lista)}</select>`, "", "ancho")}
         ${campo("Fecha", `<input type="date" name="fecha" max="${hoy()}">`)}
         ${campo("Producto destino", '<select name="destino"></select>', "", "ancho siTras")}
         ${campo('<span id="mEtU">Unidades</span>', '<input name="unidades" inputmode="decimal" placeholder="0">', '<span id="mPistaU">participaciones, acciones…</span><button type="button" id="mTodas" hidden style="all:unset;cursor:pointer;color:var(--s1);font-weight:600;text-decoration:underline"></button>', "siUnid")}
@@ -442,7 +450,7 @@
     }, nuevo ? "Guardar movimiento" : "Guardar cambios");
     rellena(f, { ...m, unidades: decimal(m.unidades || ""), unidadesDestino: decimal(m.unidadesDestino || ""),
       importe: decimal(m.importe), comision: decimal(m.comision) });
-    let origenListado = null;
+    let origenListado = null, listaEsCuentas = m.tipo === "interes";
     // Unidades que tenías ese día (igual que almacen.unidades_a), sin contar este mismo movimiento.
     const teniasEl = (pid, dia) => {
       let tot = 0;
@@ -460,6 +468,13 @@
     };
     const ajusta = () => {
       const t = f.elements.tipo.value;
+      if ((t === "interes") !== listaEsCuentas) {      // cambia la lista de productos según el tipo
+        listaEsCuentas = t === "interes";
+        const elegido = f.elements.producto.value;
+        const nueva = listaEsCuentas ? cuentas : cotizables;
+        f.elements.producto.innerHTML = opcionesProducto(nueva);
+        if (nueva.some(x => x.id === elegido)) f.elements.producto.value = elegido;
+      }
       const p = prod(f.elements.producto.value);
       const tras = t === "traspaso";
       // Destinos posibles: cualquier producto con movimientos menos el propio origen.
@@ -521,6 +536,7 @@
           <button data-acc="borrarValor" data-id="${esc(v.id)}">Borrar</button></td></tr>`).join("");
       return `<section class="tarjeta saldo"><header><h2><i class="pt" style="background:var(--s${p.slot || 1})"></i>${esc(nombre(p))}</h2>
           <span class="subt">${esc(E.tipos[p.tipo] || "")}${p.entidad ? " · " + esc(p.entidad) : ""}</span><span class="sp"></span>
+          ${p.tipo === "efectivo" ? `<button class="btn" data-acc="nuevoInteres" data-id="${esc(p.id)}">+ Interés</button>` : ""}
           <button class="btn" data-acc="nuevoValor" data-id="${esc(p.id)}">+ Anotar</button></header>
         ${filas ? `<div class="tablaEnv"><table class="dt"><thead><tr><th>Fecha</th><th>${etiquetaValor(p)}</th>
           ${conAportado ? "<th>Aportado</th>" : ""}<th></th></tr></thead><tbody>${filas}</tbody></table></div>`
@@ -858,6 +874,7 @@
     editarMov: soloPropio(id => formMovimiento(E.cfg.movimientos.find(m => m.id === id))),
     borrarMov: soloPropio(borrarMov),
     nuevoValor: soloPropio(id => formValor(null, id)),
+    nuevoInteres: soloPropio(id => formMovimiento(null, id, "interes")),
     editarValor: soloPropio(id => formValor(E.cfg.valoraciones.find(v => v.id === id))),
     borrarValor: soloPropio(borrarValor),
     todosValores: soloPropio(todosValores),
