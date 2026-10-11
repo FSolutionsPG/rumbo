@@ -194,9 +194,9 @@
     const filas = E.cfg.productos.map(p => {
       const n = soloSaldo(p) || manual(p)
         ? E.cfg.valoraciones.filter(v => v.producto === p.id).length + " valores"
-        : E.cfg.movimientos.filter(m => m.producto === p.id).length + " movs.";
+        : E.cfg.movimientos.filter(m => m.producto === p.id || (m.tipo === "traspaso" && m.destino === p.id)).length + " movs.";
       return `<tr><td><i class="pt" style="background:var(--s${p.slot || 1})"></i>${esc(nombre(p))}
-          ${p.identificador ? `<small class="idp">${esc(p.identificador)}</small>` : ""}</td>
+          ${p.identificador ? `<small class="idp">${esc(p.identificador)}</small>` : ""}${p.archivado ? ' <small class="idp">archivado</small>' : ""}</td>
         <td>${esc(E.tipos[p.tipo] || p.tipo)}</td><td>${precioDe(p)}</td>
         <td>${esc(E.fuentes[p.fuente] || "")}${p.codigo ? ` <small>${esc(p.codigo)}</small>` : ""}</td>
         <td>${n}</td>
@@ -268,6 +268,8 @@
         ${campo("Color en los gráficos", `<div class="colores">${colores}</div>`)}
         <label class="interruptor ancho"><input type="checkbox" name="largoPlazo"><span class="pista"></span>
           <span><b>Inversión a largo plazo</b><small>El botón «Solo largo plazo» del panel quita lo que no lo es: colchón, cuentas…</small></span></label>
+        <label class="interruptor ancho"><input type="checkbox" name="archivado"><span class="pista"></span>
+          <span><b>Archivado (ya no lo tengo)</b><small>Se oculta del panel. Sigue contando en el histórico, la TIR y el rendimiento. Los productos sin unidades ni valor se ocultan solos.</small></span></label>
       </div>
       <p class="relleno" id="bRelleno" hidden></p>
 
@@ -287,6 +289,7 @@
     async f => {
       const d = campos(f);
       d.largoPlazo = f.elements.largoPlazo.checked;
+      d.archivado = f.elements.archivado.checked;
       if (!nuevo) d.id = p.id;
       const item = await guarda("productos", d);
       if (!nuevo) return null;
@@ -369,22 +372,27 @@
   function vistaMovimientos() {
     const cotizables = E.cfg.productos.filter(p => !soloSaldo(p));
     const movs = E.cfg.movimientos
-      .filter(m => E.filtro === "todos" || m.producto === E.filtro)
+      // Un traspaso es un solo movimiento (en el origen) pero se ve también en la lista del destino.
+      .filter(m => E.filtro === "todos" || m.producto === E.filtro || (m.tipo === "traspaso" && m.destino === E.filtro))
       .sort((a, b) => a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : 0);
     const filas = movs.map(m => {
-      const p = prod(m.producto);
-      const precio = m.unidades ? (m.importe - (m.comision || 0)) / m.unidades : null;
+      const entra = m.tipo === "traspaso" && E.filtro !== "todos" && m.destino === E.filtro && m.producto !== E.filtro;
+      const p = prod(entra ? m.destino : m.producto);
+      const uds = entra ? m.unidadesDestino : m.unidades;
+      const precio = uds ? (m.importe - (m.comision || 0)) / uds : null;
+      const tipo = m.tipo !== "traspaso" ? (E.tiposMov[m.tipo] || m.tipo)
+        : entra ? `Traspaso ← ${nombre(prod(m.producto))}` : `Traspaso → ${nombre(prod(m.destino))}`;
       return `<tr><td>${fecha(m.fecha)}</td><td style="text-align:left">${p ? `<i class="pt" style="background:var(--s${p.slot || 1})"></i>` : ""}${esc(nombre(p))}</td>
-        <td style="text-align:left">${esc(E.tiposMov[m.tipo] || m.tipo)}</td>
-        <td>${m.unidades ? num(m.unidades) : "—"}</td>
-        <td class="${m.tipo === "compra" || m.tipo === "comision" ? "" : "pos"}">${eur(m.importe)}</td>
+        <td style="text-align:left">${esc(tipo)}</td>
+        <td>${uds ? num(uds) : "—"}</td>
+        <td class="${m.tipo === "compra" || m.tipo === "comision" || m.tipo === "traspaso" ? "" : "pos"}">${eur(m.importe)}</td>
         <td>${precio ? num(precio) + " €" : "—"}</td>
         <td class="nota" title="${esc(m.nota)}">${esc(m.nota || "")}</td>
         <td class="acc"><button data-acc="editarMov" data-id="${esc(m.id)}">Editar</button>
           <button data-acc="borrarMov" data-id="${esc(m.id)}">Borrar</button></td></tr>`;
     }).join("");
     return `<section class="tarjeta"><header><h2>Movimientos</h2>
-        <span class="subt">Compras, ventas, dividendos y comisiones</span><span class="sp"></span>
+        <span class="subt">Compras, ventas, dividendos, comisiones y traspasos</span><span class="sp"></span>
         <select id="edFiltro" aria-label="Filtrar por producto"><option value="todos">Todos los productos</option>
           ${cotizables.map(p => `<option value="${esc(p.id)}"${p.id === E.filtro ? " selected" : ""}>${esc(nombre(p))}</option>`).join("")}</select>
         <button class="btn prim" data-acc="nuevoMov">+ Añadir movimiento</button></header>
@@ -400,6 +408,7 @@
     venta: "Lo que te ingresaron, ya descontadas las comisiones.",
     dividendo: "Lo que te ingresaron por el dividendo o el cupón.",
     comision: "Comisiones sueltas, como la de custodia. Las de compra y venta ya van dentro de su importe.",
+    traspaso: "Lo que valía lo traspasado ese día. El destino hereda el coste y la fecha de cada compra: no se cuenta como venta ni como dinero que metes.",
   };
 
   function formMovimiento(m, productoId) {
@@ -415,8 +424,10 @@
         ${campo("Producto", `<select name="producto">${cotizables.map(p =>
           `<option value="${esc(p.id)}">${esc(nombre(p))}</option>`).join("")}</select>`, "", "ancho")}
         ${campo("Fecha", `<input type="date" name="fecha" max="${hoy()}">`)}
-        ${campo("Unidades", '<input name="unidades" inputmode="decimal" placeholder="0">', '<span id="mPistaU">participaciones, acciones…</span><button type="button" id="mTodas" hidden style="all:unset;cursor:pointer;color:var(--s1);font-weight:600;text-decoration:underline"></button>', "siUnid")}
-        ${campo("Importe total", '<div class="conSufijo"><input name="importe" inputmode="decimal" placeholder="0,00"><span>€</span></div>')}
+        ${campo("Producto destino", '<select name="destino"></select>', "", "ancho siTras")}
+        ${campo('<span id="mEtU">Unidades</span>', '<input name="unidades" inputmode="decimal" placeholder="0">', '<span id="mPistaU">participaciones, acciones…</span><button type="button" id="mTodas" hidden style="all:unset;cursor:pointer;color:var(--s1);font-weight:600;text-decoration:underline"></button>', "siUnid")}
+        ${campo("Unidades que entran", '<input name="unidadesDestino" inputmode="decimal" placeholder="0">', "en el destino", "siEntran")}
+        ${campo('<span id="mEtImp">Importe total</span>', '<div class="conSufijo"><input name="importe" inputmode="decimal" placeholder="0,00"><span>€</span></div>')}
         ${campo("Comisión", '<div class="conSufijo"><input name="comision" inputmode="decimal" placeholder="0,00"><span>€</span></div>', "ya incluida en el importe", "siCom")}
         ${campo("Nota", '<input name="nota" maxlength="200" placeholder="Por ejemplo: aportación mensual">', "opcional", "ancho")}
       </div>
@@ -429,14 +440,17 @@
       recuerda.guarda("patrimonio.editor", "movimientos");
       return null;
     }, nuevo ? "Guardar movimiento" : "Guardar cambios");
-    rellena(f, { ...m, unidades: decimal(m.unidades || ""), importe: decimal(m.importe), comision: decimal(m.comision) });
+    rellena(f, { ...m, unidades: decimal(m.unidades || ""), unidadesDestino: decimal(m.unidadesDestino || ""),
+      importe: decimal(m.importe), comision: decimal(m.comision) });
+    let origenListado = null;
     // Unidades que tenías ese día (igual que almacen.unidades_a), sin contar este mismo movimiento.
     const teniasEl = (pid, dia) => {
       let tot = 0;
       for (const x of E.cfg.movimientos) {
-        if (x.producto !== pid || x.id === m.id || x.fecha > dia) continue;
+        if (x.id === m.id || x.fecha > dia) continue;
         const u = Number(x.unidades) || 0;
-        tot += x.tipo === "compra" ? u : x.tipo === "venta" ? -u : 0;
+        if (x.producto === pid) tot += x.tipo === "compra" ? u : (x.tipo === "venta" || x.tipo === "traspaso") ? -u : 0;
+        else if (x.tipo === "traspaso" && x.destino === pid) tot += Number(x.unidadesDestino) || 0;   // lo que te llegó
       }
       return Math.round(tot * 1e8) / 1e8;
     };
@@ -447,19 +461,34 @@
     const ajusta = () => {
       const t = f.elements.tipo.value;
       const p = prod(f.elements.producto.value);
-      const conUnid = t === "compra" || t === "venta";
+      const tras = t === "traspaso";
+      // Destinos posibles: cualquier producto con movimientos menos el propio origen.
+      if (origenListado !== f.elements.producto.value) {
+        origenListado = f.elements.producto.value;
+        const antes = f.elements.destino.value || m.destino || "";
+        f.elements.destino.innerHTML = cotizables.filter(x => x.id !== origenListado)
+          .map(x => `<option value="${esc(x.id)}">${esc(nombre(x))}</option>`).join("");
+        if ([...f.elements.destino.options].some(o => o.value === antes)) f.elements.destino.value = antes;
+      }
+      const dest = tras ? prod(f.elements.destino.value) : null;
+      // Un producto a mano no tiene unidades: su traspaso es siempre total.
+      const conUnid = t === "compra" || t === "venta" || (tras && !!p && !manual(p));
       f.querySelector(".siUnid").hidden = !conUnid;
-      f.querySelector(".siCom").hidden = !conUnid;
+      f.querySelector(".siCom").hidden = !(t === "compra" || t === "venta");
+      f.querySelector(".siTras").hidden = !tras;
+      f.querySelector(".siEntran").hidden = !(tras && !!dest && !manual(dest));
+      $("#mEtU").textContent = tras ? "Unidades que salen" : "Unidades";
+      $("#mEtImp").textContent = tras ? "Valor traspasado" : "Importe total";
       // Con la caja de unidades oculta, la del importe ocupa su hueco sin descuadrar la rejilla.
       $("#mAyuda").textContent = AYUDA_IMPORTE[t] + (p && manual(p) && t === "compra"
         ? " Como este producto se valora a mano, las unidades son opcionales." : "");
       const todas = f.querySelector("#mTodas");
-      const tenias = t === "venta" && p && f.elements.fecha.value ? teniasEl(p.id, f.elements.fecha.value) : 0;
+      const tenias = (t === "venta" || (tras && conUnid)) && p && f.elements.fecha.value ? teniasEl(p.id, f.elements.fecha.value) : 0;
       todas.hidden = !(tenias > 0);
       f.querySelector("#mPistaU").hidden = tenias > 0;
       if (tenias > 0) { todas.dataset.valor = decimal(tenias); todas.textContent = `Todas (${decimal(tenias)})`; }
       const u = leeNum(f.elements.unidades.value), imp = leeNum(f.elements.importe.value);
-      const com = leeNum(f.elements.comision.value) || 0;
+      const com = tras ? 0 : (leeNum(f.elements.comision.value) || 0);
       $("#mPrecio").textContent = conUnid && u > 0 && imp > 0 ? `${num((imp - com) / u)} € / unidad` : "";
     };
     f.oninput = ajusta;
