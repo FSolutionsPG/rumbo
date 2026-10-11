@@ -998,6 +998,21 @@ def construir(cfg, carpeta, descargar=True):
     tot_otros, ser_otros = suma_manual(otros, 1)
     tot_pasivos, ser_pasivos = suma_manual(pasivos, -1)
 
+    # Intereses cobrados por las cuentas: NO tocan el valor (ya van dentro del saldo que
+    # anotas), solo se suman aparte por cuenta, por año y por mes.
+    ids_cuentas = {e["id"] for e in ser_otros}
+    intereses_mes = defaultdict(float)
+    for e in ser_otros:
+        por_ano = defaultdict(float)
+        for m in movs_por.get(e["id"], []):
+            if m.get("tipo") == "interes":
+                por_ano[m["fecha"][:4]] += float(m.get("importe") or 0)
+                intereses_mes[m["fecha"][:7]] += float(m.get("importe") or 0)
+        e["interesesPorAno"] = {a: r2(v) for a, v in sorted(por_ano.items())}
+        e["intereses"] = r2(sum(por_ano.values()))
+    intereses_total = r2(sum(e["intereses"] for e in ser_otros))
+    intereses_ano = r2(sum(e["interesesPorAno"].get(fecha_extracto.isoformat()[:4], 0) for e in ser_otros))
+
     serie_total, serie_ap_total = [], []
     for i in range(n):
         s = sum((p["serie"][i] or 0) for p in productos)
@@ -1319,6 +1334,7 @@ def construir(cfg, carpeta, descargar=True):
             "nuevo": r2(nuevos), "mercado": r2(v1 - v0 - ap - nuevos),
             "rentabilidad": r4(idx_cartera[i_fin] / b - 1) if b else None,
             "porProducto": detalle,
+            **({"intereses": r2(intereses_mes[mes])} if intereses_mes.get(mes) else {}),
         })
 
     # ---- ¿y si lo hubieras metido todo en un indexado? ----
@@ -1392,6 +1408,8 @@ def construir(cfg, carpeta, descargar=True):
             "rentabilidad": r4(plusvalia_total / aportado_total) if aportado_total else None,
             "tir": tir_total,
             "realizado": realizado_total,
+            "intereses": intereses_total,
+            "interesesAno": intereses_ano,
             "serie": serie_total,
             "serieAportado": serie_ap_total,
             "porClase": agrupar("clase"),

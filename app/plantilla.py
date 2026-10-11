@@ -11,14 +11,14 @@ from .importar import COLUMNAS
 
 TIPOS_PRODUCTO = ["fondo", "etf", "accion", "cripto", "commodity", "bono", "pension",
                   "efectivo", "inmueble", "deuda", "otro"]
-TIPOS_MOVIMIENTO = ["compra", "venta", "dividendo", "comision", "saldo"]
+TIPOS_MOVIMIENTO = ["compra", "venta", "dividendo", "interes", "comision", "saldo"]
 
 EXPLICACION = [
     ("fecha", "Sí", "Día de la operación. Por ejemplo 10/03/2025."),
     ("identificador", "Casi siempre", "ISIN (IE00BYX5NX33) o ticker (AAPL, BTC-EUR). Vacío solo en cuentas y cosas sin precio en internet."),
     ("nombre", "Si no hay identificador", "Nombre del producto o de la cuenta. Sirve para reconocer las cuentas bancarias."),
     ("tipo_producto", "No", "fondo, etf, accion, cripto, commodity, bono, pension, efectivo, inmueble, deuda u otro."),
-    ("tipo_movimiento", "Sí", "compra, venta, dividendo, comision o saldo (el saldo de una cuenta en esa fecha)."),
+    ("tipo_movimiento", "Sí", "compra, venta, dividendo, interes (lo que te paga una cuenta remunerada), comision o saldo (el saldo de una cuenta en esa fecha)."),
     ("unidades", "Recomendado", "Participaciones, acciones u onzas. Si lo dejas vacío, se calculan con el precio de ese día."),
     ("importe", "Sí", "Dinero total. Compra: lo que salió de tu cuenta, con comisiones. Venta o dividendo: lo que entró."),
     ("moneda", "No", "Moneda del importe. Si no es EUR, se convierte con el cambio de ese día. Vacío = EUR."),
@@ -31,6 +31,7 @@ EJEMPLO = [
     (dt.date(2025, 5, 15), "BTC-EUR", "Bitcoin", "cripto", "compra", 0.01, 600, "EUR", None, ""),
     (dt.date(2025, 6, 30), "AAPL", "Apple", "accion", "dividendo", None, 1.25, "USD", None, ""),
     (dt.date(2025, 6, 30), "", "Cuenta del banco", "efectivo", "saldo", None, 2500, "EUR", None, "Saldo a fin de mes"),
+    (dt.date(2025, 6, 30), "", "Cuenta del banco", "efectivo", "interes", None, 4.2, "EUR", None, "Intereses ya sin retención"),
 ]
 
 

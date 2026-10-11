@@ -16,7 +16,7 @@ from .motor import TIPOS, FUENTES, num_es
 
 COPIAS_MAX = 20
 TIPOS_MOV = {"compra": "Compra", "venta": "Venta", "dividendo": "Dividendo o cupón",
-             "comision": "Comisión", "traspaso": "Traspaso"}
+             "comision": "Comisión", "traspaso": "Traspaso", "interes": "Interés"}
 SOLO_SALDO = ("efectivo", "deuda")   # tipos que se siguen solo con saldos anotados
 
 CARTERA_VACIA = {
@@ -287,12 +287,16 @@ def guarda_movimiento(cfg, datos):
     p = producto(cfg, datos.get("producto"))
     if not p:
         errores.append("Elige el producto.")
-    elif p.get("tipo") in SOLO_SALDO:
+    tipo = datos.get("tipo")
+    if p and tipo == "interes":
+        if p.get("tipo") != "efectivo":
+            errores.append(f"Los intereses son de cuentas: «{p.get('corto') or p['nombre']}» no es una cuenta. "
+                           "Para fondos, acciones o bonos usa «Dividendo o cupón».")
+    elif p and p.get("tipo") in SOLO_SALDO:
         errores.append(f"«{p.get('corto') or p['nombre']}» se sigue con saldos, no con movimientos: "
                        "anótalo en «Saldos y valores».")
-    tipo = datos.get("tipo")
     if tipo not in TIPOS_MOV:
-        errores.append("Elige el tipo de movimiento: compra, venta, dividendo, comisión o traspaso.")
+        errores.append("Elige el tipo de movimiento: compra, venta, dividendo, comisión, traspaso o interés.")
     f = fecha(datos.get("fecha"), errores)
     importe = numero(datos.get("importe"), "el importe", errores, mayor_que=0)
     cotiza = bool(p and p.get("fuente") != "manual")
@@ -308,6 +312,8 @@ def guarda_movimiento(cfg, datos):
         destino, unidades_destino = _valida_traspaso(cfg, datos, p, errores)
         unidades = _unidades_que_salen(cfg, datos, p, f, cotiza, errores)
     comision = numero(datos.get("comision"), "la comisión", errores, obligatorio=False, minimo=0)
+    if tipo == "interes":
+        comision = None      # el interés es neto: sin unidades ni comisión
     if comision and importe and comision >= importe:
         errores.append("La comisión no puede ser mayor que el importe total.")
     if not errores and tipo == "venta" and cotiza and unidades:

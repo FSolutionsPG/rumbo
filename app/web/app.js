@@ -223,8 +223,13 @@
     let valor = 0, aportado = 0, valorConCoste = 0, valorTir = 0, nAp = 0;
     const flujos = [];
     const enLista = new Set(lista.map(p => p.id));
+    // Intereses de cuentas: no cambian el valor (ya van en el saldo); solo de las cuentas de la lista.
+    const anoIntereses = String(D.fechaExtracto || "").slice(0, 4);
+    let intereses = 0, interesesAno = 0;
 
     lista.forEach(p => {
+      intereses += p.intereses || 0;
+      interesesAno += (p.interesesPorAno || {})[anoIntereses] || 0;
       const s = p.serie || [], sa = p.serieAportado || [];
       for (let i = 0; i < n; i++) {
         if (s[i] != null) serie[i] += s[i];
@@ -284,6 +289,7 @@
       valor, aportado, valorConCoste, plusvalia,
       rentabilidad: aportado ? plusvalia / aportado : null,
       tir, numAportaciones: nAp, ritmo, racha, caida, caidaFecha,
+      intereses, interesesAno,
       serie, serieAportado: serieAp,
     };
   }
@@ -405,6 +411,10 @@
         <span class="${cl}">(${G.fmtPctSigno(m.rentabilidad)})</span> sobre lo aportado`);
     }
     if (m.tir !== null) partes.push(`TIR anualizada <span class="fuerte">${G.fmtPctSigno(m.tir)}</span>`);
+    if (m.intereses > 0) {
+      partes.push(`Intereses de cuentas <span class="pos fuerte">${G.fmtEur(m.intereses)}</span>
+        (este año ${G.fmtEur(m.interesesAno)})`);
+    }
 
     const pv = precioVivo();
     if (pv) {
@@ -727,6 +737,10 @@
       e: "Nuevo en el panel", v: G.fmtEur(r.nuevo, 0),
       n: "no es dinero nuevo: es que empiezas a seguirlo", c: G.css("--s7")
     });
+    if (r.intereses > 0) tarjetas.push({
+      e: "Intereses cobrados", v: G.fmtEur(r.intereses),
+      n: "de tus cuentas; ya van dentro del saldo", c: G.css("--s5")
+    });
     $("#mesTarjetas").innerHTML = tarjetas.map(t =>
       `<div class="mesT" style="--c:${t.c}"><span class="barra"></span>
         <div class="e">${t.e}</div><div class="v ${t.cl || ""}">${t.v}</div><div class="n">${t.n}</div></div>`).join("");
@@ -812,6 +826,9 @@
         p.nav != null ? G.fmtEur(p.nav) + (p.navFecha ? " · cierre del " + G.fmtFechaCorta(p.navFecha) : "") : null],
       ["Fuente del precio", p.fuenteTexto || p.fuentePrecio],
       ["Plusvalía ya materializada", p.realizado ? G.fmtEur(p.realizado) : null],
+      ["Intereses cobrados", p.intereses > 0 ? G.fmtEur(p.intereses) : null],
+      ...Object.entries(p.interesesPorAno || {}).filter(([, v]) => v > 0)
+        .map(([a, v]) => ["Intereses de " + a, G.fmtEur(v)]),
       ["Peso en el patrimonio", p.peso != null ? G.fmtPct(p.peso, 1) : null],
     ].filter(c => c[0] && c[1]);
 
