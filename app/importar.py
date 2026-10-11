@@ -373,6 +373,9 @@ def preparar_tabla(cfg, filas, carpeta):
         if not fecha:
             plan.error(n, f"La fecha «{f.get('fecha') or ''}» no es válida. Usa el formato 2025-03-10 o 10/03/2025.")
             continue
+        if not tipo and sin_tildes(f.get("tipo_movimiento")) in ("traspaso", "traspasos", "transfer"):
+            plan.error(n, "Los traspasos se anotan en Mis datos → Movimientos.")
+            continue
         if not tipo:
             plan.error(n, f"El tipo de movimiento «{f.get('tipo_movimiento') or ''}» no es válido: "
                           "usa compra, venta, dividendo, comision o saldo.")
@@ -497,8 +500,7 @@ def aplicar(cfg, plan):
     existentes = {firma(m) for m in cfg["movimientos"]}
 
     añadidos, duplicados, filas = 0, 0, []
-    orden = {"compra": 0, "comision": 1, "dividendo": 2, "venta": 3}
-    for mv in sorted(plan.movimientos, key=lambda m: (m["fecha"], orden.get(m["tipo"], 9))):
+    for mv in sorted(plan.movimientos, key=lambda m: (m["fecha"], motor.ORDEN_TIPO.get(m["tipo"], 9))):
         datos = {k: mv[k] for k in ("fecha", "tipo", "unidades", "importe", "comision", "nota") if mv.get(k) is not None}
         datos["producto"] = real(mv["producto"])
         estado = "nuevo"

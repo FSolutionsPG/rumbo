@@ -63,6 +63,7 @@
     btcVivo: null,
     compRef: recuerda.lee("patrimonio.compRef") || "mundo",
     ocultos: new Set(),
+    verCerrados: recuerda.lee("rumbo.verCerrados") === "1",
   };
 
   /* ---------------------------------------------- ¿y si lo hubieras metido en un indexado? */
@@ -146,6 +147,27 @@
   const filtrando = () => estado.ocultos.size > 0;
   const buscaProd = id => TODOS().find(p => p.id === id);
 
+  /* Productos cerrados (sin unidades ni valor, o archivados): se esconden de las tarjetas, los
+     botones de filtro y el selector de Productos, pero NO de las cifras ni de los gráficos, y
+     no pasan por estado.ocultos (que recalcula la TIR y los KPIs en el navegador). */
+  const cerrados = () => TODOS().filter(p => p.cerrado);
+  const enPanel = () => TODOS().filter(p => !p.cerrado || estado.verCerrados);
+  function botonCerrados(cont, repinta) {
+    const n = cerrados().length;
+    if (!n) return;
+    const b = document.createElement("button");
+    b.className = "filtro preset";
+    b.setAttribute("aria-pressed", String(estado.verCerrados));
+    b.textContent = `Ver cerrados (${n})`;
+    b.title = "Enseña los productos que ya no tienes (0 unidades y 0 €, o archivados). Siguen contando en el histórico";
+    b.onclick = () => {
+      estado.verCerrados = !estado.verCerrados;
+      recuerda.guarda("rumbo.verCerrados", estado.verCerrados ? "1" : "0");
+      repinta();
+    };
+    cont.appendChild(b);
+  }
+
   /* ---------------------------------------------- precio en vivo */
   function precioVivo() {
     const v = D.vivo;
@@ -200,6 +222,7 @@
     const serieAp = new Array(n).fill(0);
     let valor = 0, aportado = 0, valorConCoste = 0, valorTir = 0, nAp = 0;
     const flujos = [];
+    const enLista = new Set(lista.map(p => p.id));
 
     lista.forEach(p => {
       const s = p.serie || [], sa = p.serieAportado || [];
@@ -213,10 +236,14 @@
         valorConCoste += valorDe(p);
         nAp += (p.aportaciones || []).filter(a => a.importe).length;
       }
-      // La TIR usa todo el dinero que entró y salió (compras, ventas, dividendos y
-      // comisiones), y solo el valor de los productos que tienen esos movimientos.
-      if (p.flujos && p.flujos.length) {
-        p.flujos.forEach(([f, v]) => flujos.push({ t: Date.parse(f), v }));
+      // La TIR usa todo el dinero que entró y salió de tu bolsillo (compras, ventas, dividendos y
+      // comisiones), y solo el valor de los productos que tienen esos movimientos o traspasos.
+      // Un traspaso no es dinero tuyo (p.flujos no lo lleva) salvo que el otro producto quede
+      // fuera de este conjunto: ahí sí es dinero que entra o sale de él.
+      if ((p.flujosPropios || p.flujos || []).length) {
+        (p.flujos || []).forEach(([f, v]) => flujos.push({ t: Date.parse(f), v }));
+        (p.traspasos || []).filter(t => !enLista.has(t.contra)).forEach(t =>
+          flujos.push({ t: Date.parse(t.fecha), v: t.sentido === "sale" ? t.importe : -t.importe }));
         valorTir += valorDe(p);
       }
     });
@@ -325,7 +352,7 @@
   function pintaFiltros() {
     const cont = $("#filtros");
     cont.innerHTML = "";
-    TODOS().forEach(p => {
+    enPanel().forEach(p => {
       const on = !estado.ocultos.has(p.id);
       const b = document.createElement("button");
       b.className = "filtro";
@@ -343,6 +370,7 @@
     const sep = document.createElement("span");
     sep.className = "filtroSep";
     cont.appendChild(sep);
+    botonCerrados(cont, pintaPatrimonio);
 
     const cortos = idsCorto();
     const esLargo = cortos.length > 0 && cortos.length === estado.ocultos.size &&
@@ -485,7 +513,7 @@
   function pintaChips() {
     const cont = $("#chips");
     cont.innerHTML = "";
-    TODOS().forEach(p => {
+    enPanel().forEach(p => {
       const oculto = estado.ocultos.has(p.id);
       const b = document.createElement("button");
       b.className = "chip" + (oculto ? " apagado" : "");
@@ -745,9 +773,11 @@
      PESTAÑA 3 · FONDOS
      ================================================================ */
   function pintaFondos() {
-    const lista = TODOS();
-    if (!estado.fondo || !buscaProd(estado.fondo)) estado.fondo = lista[0].id;
+    const todos = TODOS();
+    if (!estado.fondo || !buscaProd(estado.fondo)) estado.fondo = (todos.find(x => !x.cerrado) || todos[0]).id;
     const p = buscaProd(estado.fondo);
+    // El que estás mirando se queda en el selector aunque esté cerrado.
+    const lista = todos.filter(x => !x.cerrado || estado.verCerrados || x.id === estado.fondo);
 
     $("#selFondo").innerHTML = "";
     lista.forEach(x => {
@@ -758,6 +788,7 @@
       b.onclick = () => { estado.fondo = x.id; pintaFondos(); };
       $("#selFondo").appendChild(b);
     });
+    botonCerrados($("#selFondo"), pintaFondos);
 
     pintaFichaFondo(p);
     pintaExposicion(p);
@@ -851,10 +882,18 @@
         texto: `${["Aportación pequeña", "Aportación habitual", "Aportación extraordinaria"][niv]}: ${G.fmtEur(a.importe)}`,
       };
     });
+    const evTraspasos = (p.traspasos || []).map(t => {
+      const otro = buscaProd(t.contra);
+      const nm = otro ? (otro.corto || otro.nombre) : "otro producto";
+      return {
+        fecha: t.fecha, color: G.css("--tinta3"), aro: true, r: 5,
+        texto: `Traspaso ${t.sentido === "sale" ? "a" : "desde"} ${nm}: ${G.fmtEur(t.importe)}`,
+      };
+    });
     G.lineaConEventos($("#grafFondo"), {
       fechas,
       valores: corta(verVL ? p.navSerie : p.serie),
-      color: color(p), alto: 280, eventos, desdeCero: !verVL && estado.rango === "todo",
+      color: color(p), alto: 280, eventos: eventos.concat(evTraspasos), desdeCero: !verVL && estado.rango === "todo",
       overlay: verVL ? null : ((p.serieAportado || []).some(v => v)
         ? { nombre: "Aportado", valores: corta(p.serieAportado) } : null),
       formatoY: verVL ? (v => G.fmtEur(v, v > 500 ? 0 : 2)) : null,
