@@ -55,6 +55,7 @@ mis_datos/        DATOS REALES del usuario: ignorado por git
 - `motor.num_es` interpreta `1.234` como mil (formato español): cualquier cambio se prueba con las dos formas.
 - `exportar.py` recorta `index.html` con expresiones regulares (`#tab-datos`, `#tab-ayuda`, el cargador de scripts): si cambias esas zonas, exporta y abre el HTML.
 - Todo campo nuevo con euros va en `exportar.CAMPOS_DINERO`; si no, se filtra en «Ocultar importes».
+- Un traspaso tiene dos patas (+ en el origen, − en el destino) que se anulan al sumar entre productos: un test que compruebe que el traspaso no entra en `flujo_dia` necesita un caso con una pata fuera del conjunto (destino sin precio o valorado a mano); si no, el test no detecta el sabotaje.
 - El filtro «Solo largo plazo» (`estado.ocultos`) recalcula TIR y KPIs en el navegador: no lo uses para esconder cosas que deban seguir contando.
 
 ## Reglas para los agentes
