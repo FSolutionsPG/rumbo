@@ -43,9 +43,15 @@
     return;
   }
 
+  // Rango de los gráficos, compartido por las pestañas y recordado entre sesiones.
+  function rangoGuardado() {
+    const id = recuerda.lee("rumbo.rango");
+    return ["1m", "3m", "6m", "ytd", "1a"].includes(id) ? id : "todo";
+  }
+
   const estado = {
     tab: "patrimonio",
-    rango: "todo",
+    rango: rangoGuardado(),
     vista: "apilado",
     dist: "clase",
     fondo: null,
@@ -57,6 +63,7 @@
     btcVivo: null,
     compRef: recuerda.lee("patrimonio.compRef") || "mundo",
     ocultos: new Set(),
+    verCerrados: recuerda.lee("rumbo.verCerrados") === "1",
   };
 
   /* ---------------------------------------------- ¿y si lo hubieras metido en un indexado? */
@@ -96,15 +103,15 @@
       caja("Has puesto de tu bolsillo", G.fmtEur(C.aportado[C.aportado.length - 1], 0), "compras menos ventas") +
       caja("Veredicto", veredicto, "", "veredicto");
     G.multiLinea($("#grafComparacion"), {
-      fechas: D.fechas, alto: 300,
+      fechas: corta(D.fechas), alto: 300,
       series: [
-        { nombre: "Tu cartera", valores: C.tuya, color: G.css("--s1"), destacado: true },
-        { nombre: "Con el " + r.nombre, valores: r.serie, color: G.css("--s2") },
-        { nombre: "Tu dinero puesto", valores: C.aportado, color: G.css("--tinta3") },
+        { nombre: "Tu cartera", valores: corta(C.tuya), color: G.css("--s1"), destacado: true },
+        { nombre: "Con el " + r.nombre, valores: corta(r.serie), color: G.css("--s2") },
+        { nombre: "Tu dinero puesto", valores: corta(C.aportado), color: G.css("--tinta3") },
       ],
       formatoY: v => G.fmtEurCorto(v),
       formatoValor: v => G.fmtEur(v, 0),
-      desdeCero: true,
+      desdeCero: estado.rango === "todo",
     });
     const ley = (c, t) => `<span class="leyItem"><i style="background:${G.css(c)}"></i>${t}</span>`;
     $("#compNota").innerHTML = `<span class="leyComp">${ley("--s1", "Tu cartera")}${ley("--s2", "Con el " + r.nombre)}${ley("--tinta3", "Tu dinero puesto")}</span>
@@ -139,6 +146,27 @@
   const visibles = () => TODOS().filter(p => !estado.ocultos.has(p.id));
   const filtrando = () => estado.ocultos.size > 0;
   const buscaProd = id => TODOS().find(p => p.id === id);
+
+  /* Productos cerrados (sin unidades ni valor, o archivados): se esconden de las tarjetas, los
+     botones de filtro y el selector de Productos, pero NO de las cifras ni de los gráficos, y
+     no pasan por estado.ocultos (que recalcula la TIR y los KPIs en el navegador). */
+  const cerrados = () => TODOS().filter(p => p.cerrado);
+  const enPanel = () => TODOS().filter(p => !p.cerrado || estado.verCerrados);
+  function botonCerrados(cont, repinta) {
+    const n = cerrados().length;
+    if (!n) return;
+    const b = document.createElement("button");
+    b.className = "filtro preset";
+    b.setAttribute("aria-pressed", String(estado.verCerrados));
+    b.textContent = `Ver cerrados (${n})`;
+    b.title = "Enseña los productos que ya no tienes (0 unidades y 0 €, o archivados). Siguen contando en el histórico";
+    b.onclick = () => {
+      estado.verCerrados = !estado.verCerrados;
+      recuerda.guarda("rumbo.verCerrados", estado.verCerrados ? "1" : "0");
+      repinta();
+    };
+    cont.appendChild(b);
+  }
 
   /* ---------------------------------------------- precio en vivo */
   function precioVivo() {
@@ -194,8 +222,14 @@
     const serieAp = new Array(n).fill(0);
     let valor = 0, aportado = 0, valorConCoste = 0, valorTir = 0, nAp = 0;
     const flujos = [];
+    const enLista = new Set(lista.map(p => p.id));
+    // Intereses de cuentas: no cambian el valor (ya van en el saldo); solo de las cuentas de la lista.
+    const anoIntereses = String(D.fechaExtracto || "").slice(0, 4);
+    let intereses = 0, interesesAno = 0;
 
     lista.forEach(p => {
+      intereses += p.intereses || 0;
+      interesesAno += (p.interesesPorAno || {})[anoIntereses] || 0;
       const s = p.serie || [], sa = p.serieAportado || [];
       for (let i = 0; i < n; i++) {
         if (s[i] != null) serie[i] += s[i];
@@ -207,10 +241,14 @@
         valorConCoste += valorDe(p);
         nAp += (p.aportaciones || []).filter(a => a.importe).length;
       }
-      // La TIR usa todo el dinero que entró y salió (compras, ventas, dividendos y
-      // comisiones), y solo el valor de los productos que tienen esos movimientos.
-      if (p.flujos && p.flujos.length) {
-        p.flujos.forEach(([f, v]) => flujos.push({ t: Date.parse(f), v }));
+      // La TIR usa todo el dinero que entró y salió de tu bolsillo (compras, ventas, dividendos y
+      // comisiones), y solo el valor de los productos que tienen esos movimientos o traspasos.
+      // Un traspaso no es dinero tuyo (p.flujos no lo lleva) salvo que el otro producto quede
+      // fuera de este conjunto: ahí sí es dinero que entra o sale de él.
+      if ((p.flujosPropios || p.flujos || []).length) {
+        (p.flujos || []).forEach(([f, v]) => flujos.push({ t: Date.parse(f), v }));
+        (p.traspasos || []).filter(t => !enLista.has(t.contra)).forEach(t =>
+          flujos.push({ t: Date.parse(t.fecha), v: t.sentido === "sale" ? t.importe : -t.importe }));
         valorTir += valorDe(p);
       }
     });
@@ -251,6 +289,7 @@
       valor, aportado, valorConCoste, plusvalia,
       rentabilidad: aportado ? plusvalia / aportado : null,
       tir, numAportaciones: nAp, ritmo, racha, caida, caidaFecha,
+      intereses, interesesAno,
       serie, serieAportado: serieAp,
     };
   }
@@ -285,6 +324,20 @@
   }
   const corta = arr => (arr || []).slice(desdeIdx());
 
+  // Cambia el rango (único para todas las pestañas), lo recuerda y repinta la pestaña visible.
+  function ponRango(id) {
+    estado.rango = id;
+    recuerda.guarda("rumbo.rango", id);
+    pintarTab();
+  }
+
+  // Base 100 en el primer día visible de la serie (los null iniciales no cuentan).
+  function rebasa100(arr) {
+    const v = corta(arr);
+    const base = v.find(x => x != null && x !== 0);
+    return base == null ? v : v.map(x => x == null ? null : x / base * 100);
+  }
+
   function pintaSegm(cont, opciones, activo, alPulsar) {
     if (!cont) return;
     cont.innerHTML = "";
@@ -305,7 +358,7 @@
   function pintaFiltros() {
     const cont = $("#filtros");
     cont.innerHTML = "";
-    TODOS().forEach(p => {
+    enPanel().forEach(p => {
       const on = !estado.ocultos.has(p.id);
       const b = document.createElement("button");
       b.className = "filtro";
@@ -323,6 +376,7 @@
     const sep = document.createElement("span");
     sep.className = "filtroSep";
     cont.appendChild(sep);
+    botonCerrados(cont, pintaPatrimonio);
 
     const cortos = idsCorto();
     const esLargo = cortos.length > 0 && cortos.length === estado.ocultos.size &&
@@ -357,6 +411,10 @@
         <span class="${cl}">(${G.fmtPctSigno(m.rentabilidad)})</span> sobre lo aportado`);
     }
     if (m.tir !== null) partes.push(`TIR anualizada <span class="fuerte">${G.fmtPctSigno(m.tir)}</span>`);
+    if (m.intereses > 0) {
+      partes.push(`Intereses de cuentas <span class="pos fuerte">${G.fmtEur(m.intereses)}</span>
+        (este año ${G.fmtEur(m.interesesAno)})`);
+    }
 
     const pv = precioVivo();
     if (pv) {
@@ -465,7 +523,7 @@
   function pintaChips() {
     const cont = $("#chips");
     cont.innerHTML = "";
-    TODOS().forEach(p => {
+    enPanel().forEach(p => {
       const oculto = estado.ocultos.has(p.id);
       const b = document.createElement("button");
       b.className = "chip" + (oculto ? " apagado" : "");
@@ -615,7 +673,7 @@
     pintaHitos(mTodo);
     pintaProyeccion();
     pintaTabla();
-    pintaSegm($("#segRango"), RANGOS, estado.rango, id => { estado.rango = id; pintaPatrimonio(); });
+    pintaSegm($("#segRango"), RANGOS, estado.rango, ponRango);
     pintaSegm($("#segVista"), [
       { id: "apilado", et: "Por producto" }, { id: "total", et: "Total" },
       { id: "dinero", et: "Tu dinero vs mercado" }, { id: "reparto", et: "Reparto %" }
@@ -679,6 +737,10 @@
       e: "Nuevo en el panel", v: G.fmtEur(r.nuevo, 0),
       n: "no es dinero nuevo: es que empiezas a seguirlo", c: G.css("--s7")
     });
+    if (r.intereses > 0) tarjetas.push({
+      e: "Intereses cobrados", v: G.fmtEur(r.intereses),
+      n: "de tus cuentas; ya van dentro del saldo", c: G.css("--s5")
+    });
     $("#mesTarjetas").innerHTML = tarjetas.map(t =>
       `<div class="mesT" style="--c:${t.c}"><span class="barra"></span>
         <div class="e">${t.e}</div><div class="v ${t.cl || ""}">${t.v}</div><div class="n">${t.n}</div></div>`).join("");
@@ -725,9 +787,11 @@
      PESTAÑA 3 · FONDOS
      ================================================================ */
   function pintaFondos() {
-    const lista = TODOS();
-    if (!estado.fondo || !buscaProd(estado.fondo)) estado.fondo = lista[0].id;
+    const todos = TODOS();
+    if (!estado.fondo || !buscaProd(estado.fondo)) estado.fondo = (todos.find(x => !x.cerrado) || todos[0]).id;
     const p = buscaProd(estado.fondo);
+    // El que estás mirando se queda en el selector aunque esté cerrado.
+    const lista = todos.filter(x => !x.cerrado || estado.verCerrados || x.id === estado.fondo);
 
     $("#selFondo").innerHTML = "";
     lista.forEach(x => {
@@ -738,6 +802,7 @@
       b.onclick = () => { estado.fondo = x.id; pintaFondos(); };
       $("#selFondo").appendChild(b);
     });
+    botonCerrados($("#selFondo"), pintaFondos);
 
     pintaFichaFondo(p);
     pintaExposicion(p);
@@ -761,6 +826,9 @@
         p.nav != null ? G.fmtEur(p.nav) + (p.navFecha ? " · cierre del " + G.fmtFechaCorta(p.navFecha) : "") : null],
       ["Fuente del precio", p.fuenteTexto || p.fuentePrecio],
       ["Plusvalía ya materializada", p.realizado ? G.fmtEur(p.realizado) : null],
+      ["Intereses cobrados", p.intereses > 0 ? G.fmtEur(p.intereses) : null],
+      ...Object.entries(p.interesesPorAno || {}).filter(([, v]) => v > 0)
+        .map(([a, v]) => ["Intereses de " + a, G.fmtEur(v)]),
       ["Peso en el patrimonio", p.peso != null ? G.fmtPct(p.peso, 1) : null],
     ].filter(c => c[0] && c[1]);
 
@@ -773,6 +841,7 @@
         <h2><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${color(p)};margin-right:9px"></span>${p.nombre}</h2>
         <div class="sep"></div>
         ${hayVL ? '<div class="segm" id="segSerie"></div>' : ""}
+        <div class="segm" id="segRangoFicha"></div>
       </header>
       ${p.papel ? `<div class="papel">${p.papel}</div>` : ""}
       ${p.indiceDetalle ? `<p style="color:var(--tinta2);font-size:13.5px;margin:0 0 16px">${p.indiceDetalle}</p>` : ""}
@@ -813,6 +882,7 @@
     }
     $("#ventanas").innerHTML = html;
 
+    pintaSegm($("#segRangoFicha"), RANGOS, estado.rango, ponRango);
     if (hayVL) {
       pintaSegm($("#segSerie"),
         [{ id: "posicion", et: "Mi posición" }, { id: "vl", et: etqVL }],
@@ -829,10 +899,18 @@
         texto: `${["Aportación pequeña", "Aportación habitual", "Aportación extraordinaria"][niv]}: ${G.fmtEur(a.importe)}`,
       };
     });
+    const evTraspasos = (p.traspasos || []).map(t => {
+      const otro = buscaProd(t.contra);
+      const nm = otro ? (otro.corto || otro.nombre) : "otro producto";
+      return {
+        fecha: t.fecha, color: G.css("--tinta3"), aro: true, r: 5,
+        texto: `Traspaso ${t.sentido === "sale" ? "a" : "desde"} ${nm}: ${G.fmtEur(t.importe)}`,
+      };
+    });
     G.lineaConEventos($("#grafFondo"), {
       fechas,
       valores: corta(verVL ? p.navSerie : p.serie),
-      color: color(p), alto: 280, eventos, desdeCero: !verVL,
+      color: color(p), alto: 280, eventos: eventos.concat(evTraspasos), desdeCero: !verVL && estado.rango === "todo",
       overlay: verVL ? null : ((p.serieAportado || []).some(v => v)
         ? { nombre: "Aportado", valores: corta(p.serieAportado) } : null),
       formatoY: verVL ? (v => G.fmtEur(v, v > 500 ? 0 : 2)) : null,
@@ -959,6 +1037,7 @@
           `<td class="${v == null ? "" : v >= 0 ? "pos" : "neg"}">${G.fmtPctSigno(v, 1)}</td>`).join("")}</tr></tfoot>`);
     }
 
+    pintaSegm($("#segRangoComp"), RANGOS, estado.rango, ponRango);
     pintaComparacion();
 
     const comp = D.comparador || [];
@@ -972,16 +1051,18 @@
       const met0 = comp[0].metricas;
       const paleta = [G.css("--s1"), G.css("--s2"), G.css("--s3"), G.css("--s4"), G.css("--s5"), G.css("--s7"), G.css("--s6")];
       const series = comp.map((c, i) => ({
-        nombre: c.nombre, valores: c.indice, destacado: c.real,
+        nombre: c.nombre, valores: rebasa100(c.indice), destacado: c.real,
         color: c.real ? G.css("--tinta") : paleta[(i + 1) % paleta.length],
       }));
       G.multiLinea($("#grafComparador"), {
-        fechas: D.fechas, series, alto: 320,
+        fechas: corta(D.fechas), series, alto: 320,
+        desdeCero: false,
         formatoY: v => Math.round(v),
         formatoValor: v => v.toFixed(1),
       });
       $("#notaComparador").textContent =
-        `Base 100 desde el ${G.fmtFecha(met0.desde)}. Las alternativas son comprar y mantener con pesos fijos.`;
+        (estado.rango === "todo" ? `Base 100 desde el ${G.fmtFecha(met0.desde)}.`
+          : "Base 100 en el primer día del rango elegido: se ve lo que rindió cada cartera en ese periodo.") + ` Las alternativas son comprar y mantener con pesos fijos.`;
       $("#tablaComparador").innerHTML =
         `<thead><tr><th>Cartera</th><th>Rentabilidad</th><th>Anualizada</th>
           <th>Volatilidad</th><th>Sharpe</th><th>Máx. caída</th></tr></thead>

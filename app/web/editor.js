@@ -20,7 +20,7 @@
   const leeNum = t => {
     t = String(t || "").replace(/[€\s]/g, "");
     // "1.234,56" y "1.000" (mil) en castellano; "1234.5" también vale.
-    if (t.includes(",") || /^-?\d{1,3}(\.\d{3})+$/.test(t)) t = t.replace(/\./g, "").replace(",", ".");
+    if (t.includes(",") || /^-?[1-9]\d{0,2}(\.\d{3})+$/.test(t)) t = t.replace(/\./g, "").replace(",", ".");
     return parseFloat(t);
   };
   const nombre = p => p ? (p.corto || p.nombre) : "¿?";
@@ -194,9 +194,9 @@
     const filas = E.cfg.productos.map(p => {
       const n = soloSaldo(p) || manual(p)
         ? E.cfg.valoraciones.filter(v => v.producto === p.id).length + " valores"
-        : E.cfg.movimientos.filter(m => m.producto === p.id).length + " movs.";
+        : E.cfg.movimientos.filter(m => m.producto === p.id || (m.tipo === "traspaso" && m.destino === p.id)).length + " movs.";
       return `<tr><td><i class="pt" style="background:var(--s${p.slot || 1})"></i>${esc(nombre(p))}
-          ${p.identificador ? `<small class="idp">${esc(p.identificador)}</small>` : ""}</td>
+          ${p.identificador ? `<small class="idp">${esc(p.identificador)}</small>` : ""}${p.archivado ? ' <small class="idp">archivado</small>' : ""}</td>
         <td>${esc(E.tipos[p.tipo] || p.tipo)}</td><td>${precioDe(p)}</td>
         <td>${esc(E.fuentes[p.fuente] || "")}${p.codigo ? ` <small>${esc(p.codigo)}</small>` : ""}</td>
         <td>${n}</td>
@@ -268,6 +268,8 @@
         ${campo("Color en los gráficos", `<div class="colores">${colores}</div>`)}
         <label class="interruptor ancho"><input type="checkbox" name="largoPlazo"><span class="pista"></span>
           <span><b>Inversión a largo plazo</b><small>El botón «Solo largo plazo» del panel quita lo que no lo es: colchón, cuentas…</small></span></label>
+        <label class="interruptor ancho"><input type="checkbox" name="archivado"><span class="pista"></span>
+          <span><b>Archivado (ya no lo tengo)</b><small>Se oculta del panel. Sigue contando en el histórico, la TIR y el rendimiento. Los productos sin unidades ni valor se ocultan solos.</small></span></label>
       </div>
       <p class="relleno" id="bRelleno" hidden></p>
 
@@ -287,6 +289,7 @@
     async f => {
       const d = campos(f);
       d.largoPlazo = f.elements.largoPlazo.checked;
+      d.archivado = f.elements.archivado.checked;
       if (!nuevo) d.id = p.id;
       const item = await guarda("productos", d);
       if (!nuevo) return null;
@@ -367,24 +370,30 @@
 
   /* ---------------------------------------------- movimientos */
   function vistaMovimientos() {
-    const cotizables = E.cfg.productos.filter(p => !soloSaldo(p));
+    // El filtro incluye también las cuentas que tienen intereses anotados.
+    const cotizables = E.cfg.productos.filter(p => !soloSaldo(p) || E.cfg.movimientos.some(m => m.producto === p.id));
     const movs = E.cfg.movimientos
-      .filter(m => E.filtro === "todos" || m.producto === E.filtro)
+      // Un traspaso es un solo movimiento (en el origen) pero se ve también en la lista del destino.
+      .filter(m => E.filtro === "todos" || m.producto === E.filtro || (m.tipo === "traspaso" && m.destino === E.filtro))
       .sort((a, b) => a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : 0);
     const filas = movs.map(m => {
-      const p = prod(m.producto);
-      const precio = m.unidades ? (m.importe - (m.comision || 0)) / m.unidades : null;
+      const entra = m.tipo === "traspaso" && E.filtro !== "todos" && m.destino === E.filtro && m.producto !== E.filtro;
+      const p = prod(entra ? m.destino : m.producto);
+      const uds = entra ? m.unidadesDestino : m.unidades;
+      const precio = uds ? (m.importe - (m.comision || 0)) / uds : null;
+      const tipo = m.tipo !== "traspaso" ? (E.tiposMov[m.tipo] || m.tipo)
+        : entra ? `Traspaso ← ${nombre(prod(m.producto))}` : `Traspaso → ${nombre(prod(m.destino))}`;
       return `<tr><td>${fecha(m.fecha)}</td><td style="text-align:left">${p ? `<i class="pt" style="background:var(--s${p.slot || 1})"></i>` : ""}${esc(nombre(p))}</td>
-        <td style="text-align:left">${esc(E.tiposMov[m.tipo] || m.tipo)}</td>
-        <td>${m.unidades ? num(m.unidades) : "—"}</td>
-        <td class="${m.tipo === "compra" || m.tipo === "comision" ? "" : "pos"}">${eur(m.importe)}</td>
+        <td style="text-align:left">${esc(tipo)}</td>
+        <td>${uds ? num(uds) : "—"}</td>
+        <td class="${m.tipo === "compra" || m.tipo === "comision" || m.tipo === "traspaso" ? "" : "pos"}">${eur(m.importe)}</td>
         <td>${precio ? num(precio) + " €" : "—"}</td>
         <td class="nota" title="${esc(m.nota)}">${esc(m.nota || "")}</td>
         <td class="acc"><button data-acc="editarMov" data-id="${esc(m.id)}">Editar</button>
           <button data-acc="borrarMov" data-id="${esc(m.id)}">Borrar</button></td></tr>`;
     }).join("");
     return `<section class="tarjeta"><header><h2>Movimientos</h2>
-        <span class="subt">Compras, ventas, dividendos y comisiones</span><span class="sp"></span>
+        <span class="subt">Compras, ventas, dividendos, intereses, comisiones y traspasos</span><span class="sp"></span>
         <select id="edFiltro" aria-label="Filtrar por producto"><option value="todos">Todos los productos</option>
           ${cotizables.map(p => `<option value="${esc(p.id)}"${p.id === E.filtro ? " selected" : ""}>${esc(nombre(p))}</option>`).join("")}</select>
         <button class="btn prim" data-acc="nuevoMov">+ Añadir movimiento</button></header>
@@ -400,23 +409,33 @@
     venta: "Lo que te ingresaron, ya descontadas las comisiones.",
     dividendo: "Lo que te ingresaron por el dividendo o el cupón.",
     comision: "Comisiones sueltas, como la de custodia. Las de compra y venta ya van dentro de su importe.",
+    interes: "Lo que te ha pagado la cuenta, ya descontada la retención.",
+    traspaso: "Lo que valía lo traspasado ese día. El destino hereda el coste y la fecha de cada compra: no se cuenta como venta ni como dinero que metes.",
   };
 
-  function formMovimiento(m, productoId) {
+  function formMovimiento(m, productoId, tipoInicial) {
     const cotizables = E.cfg.productos.filter(p => !soloSaldo(p));
-    if (!cotizables.length) { alert("Primero añade un producto en «Productos»."); return; }
+    // Los intereses solo van en cuentas (tipo «efectivo»): con ese tipo, el selector enseña solo ellas.
+    const cuentas = E.cfg.productos.filter(p => p.tipo === "efectivo");
+    if (!cotizables.length && !cuentas.length) { alert("Primero añade un producto en «Productos»."); return; }
     const nuevo = !m;
-    m = m || { fecha: hoy(), tipo: "compra", producto: productoId || (E.filtro !== "todos" ? E.filtro : cotizables[0].id) };
-    const pildoras = Object.entries(E.tiposMov).map(([k, v]) =>
+    const tipo0 = tipoInicial || (cotizables.length ? "compra" : "interes");
+    const lista0 = tipo0 === "interes" ? cuentas : cotizables;
+    m = m || { fecha: hoy(), tipo: tipo0, producto: productoId ||
+      (E.filtro !== "todos" && lista0.some(p => p.id === E.filtro) ? E.filtro : (lista0[0] || cotizables[0]).id) };
+    const lista = m.tipo === "interes" ? cuentas : cotizables;
+    const opcionesProducto = l => l.map(p => `<option value="${esc(p.id)}">${esc(nombre(p))}</option>`).join("");
+    const pildoras = Object.entries(E.tiposMov).filter(([k]) => k !== "interes" || cuentas.length).map(([k, v]) =>
       `<label><input type="radio" name="tipo" value="${esc(k)}"><span>${esc(k === "dividendo" ? "Dividendo" : v)}</span></label>`).join("");
     const f = abreModal(nuevo ? "Añadir movimiento" : "Editar movimiento", `
       <div class="pildoras">${pildoras}</div>
       <div class="rejilla" style="margin-top:18px">
-        ${campo("Producto", `<select name="producto">${cotizables.map(p =>
-          `<option value="${esc(p.id)}">${esc(nombre(p))}</option>`).join("")}</select>`, "", "ancho")}
+        ${campo("Producto", `<select name="producto">${opcionesProducto(lista)}</select>`, "", "ancho")}
         ${campo("Fecha", `<input type="date" name="fecha" max="${hoy()}">`)}
-        ${campo("Unidades", '<input name="unidades" inputmode="decimal" placeholder="0">', "participaciones, acciones…", "siUnid")}
-        ${campo("Importe total", '<div class="conSufijo"><input name="importe" inputmode="decimal" placeholder="0,00"><span>€</span></div>')}
+        ${campo("Producto destino", '<select name="destino"></select>', "", "ancho siTras")}
+        ${campo('<span id="mEtU">Unidades</span>', '<input name="unidades" inputmode="decimal" placeholder="0">', '<span id="mPistaU">participaciones, acciones…</span><button type="button" id="mTodas" hidden style="all:unset;cursor:pointer;color:var(--s1);font-weight:600;text-decoration:underline"></button>', "siUnid")}
+        ${campo("Unidades que entran", '<input name="unidadesDestino" inputmode="decimal" placeholder="0">', "en el destino", "siEntran")}
+        ${campo('<span id="mEtImp">Importe total</span>', '<div class="conSufijo"><input name="importe" inputmode="decimal" placeholder="0,00"><span>€</span></div>')}
         ${campo("Comisión", '<div class="conSufijo"><input name="comision" inputmode="decimal" placeholder="0,00"><span>€</span></div>', "ya incluida en el importe", "siCom")}
         ${campo("Nota", '<input name="nota" maxlength="200" placeholder="Por ejemplo: aportación mensual">', "opcional", "ancho")}
       </div>
@@ -429,18 +448,62 @@
       recuerda.guarda("patrimonio.editor", "movimientos");
       return null;
     }, nuevo ? "Guardar movimiento" : "Guardar cambios");
-    rellena(f, { ...m, unidades: decimal(m.unidades || ""), importe: decimal(m.importe), comision: decimal(m.comision) });
+    rellena(f, { ...m, unidades: decimal(m.unidades || ""), unidadesDestino: decimal(m.unidadesDestino || ""),
+      importe: decimal(m.importe), comision: decimal(m.comision) });
+    let origenListado = null, listaEsCuentas = m.tipo === "interes";
+    // Unidades que tenías ese día (igual que almacen.unidades_a), sin contar este mismo movimiento.
+    const teniasEl = (pid, dia) => {
+      let tot = 0;
+      for (const x of E.cfg.movimientos) {
+        if (x.id === m.id || x.fecha > dia) continue;
+        const u = Number(x.unidades) || 0;
+        if (x.producto === pid) tot += x.tipo === "compra" ? u : (x.tipo === "venta" || x.tipo === "traspaso") ? -u : 0;
+        else if (x.tipo === "traspaso" && x.destino === pid) tot += Number(x.unidadesDestino) || 0;   // lo que te llegó
+      }
+      return Math.round(tot * 1e8) / 1e8;
+    };
+    f.querySelector("#mTodas").onclick = () => {
+      f.elements.unidades.value = f.querySelector("#mTodas").dataset.valor;
+      ajusta();
+    };
     const ajusta = () => {
       const t = f.elements.tipo.value;
+      if ((t === "interes") !== listaEsCuentas) {      // cambia la lista de productos según el tipo
+        listaEsCuentas = t === "interes";
+        const elegido = f.elements.producto.value;
+        const nueva = listaEsCuentas ? cuentas : cotizables;
+        f.elements.producto.innerHTML = opcionesProducto(nueva);
+        if (nueva.some(x => x.id === elegido)) f.elements.producto.value = elegido;
+      }
       const p = prod(f.elements.producto.value);
-      const conUnid = t === "compra" || t === "venta";
+      const tras = t === "traspaso";
+      // Destinos posibles: cualquier producto con movimientos menos el propio origen.
+      if (origenListado !== f.elements.producto.value) {
+        origenListado = f.elements.producto.value;
+        const antes = f.elements.destino.value || m.destino || "";
+        f.elements.destino.innerHTML = cotizables.filter(x => x.id !== origenListado)
+          .map(x => `<option value="${esc(x.id)}">${esc(nombre(x))}</option>`).join("");
+        if ([...f.elements.destino.options].some(o => o.value === antes)) f.elements.destino.value = antes;
+      }
+      const dest = tras ? prod(f.elements.destino.value) : null;
+      // Un producto a mano no tiene unidades: su traspaso es siempre total.
+      const conUnid = t === "compra" || t === "venta" || (tras && !!p && !manual(p));
       f.querySelector(".siUnid").hidden = !conUnid;
-      f.querySelector(".siCom").hidden = !conUnid;
+      f.querySelector(".siCom").hidden = !(t === "compra" || t === "venta");
+      f.querySelector(".siTras").hidden = !tras;
+      f.querySelector(".siEntran").hidden = !(tras && !!dest && !manual(dest));
+      $("#mEtU").textContent = tras ? "Unidades que salen" : "Unidades";
+      $("#mEtImp").textContent = tras ? "Valor traspasado" : "Importe total";
       // Con la caja de unidades oculta, la del importe ocupa su hueco sin descuadrar la rejilla.
       $("#mAyuda").textContent = AYUDA_IMPORTE[t] + (p && manual(p) && t === "compra"
         ? " Como este producto se valora a mano, las unidades son opcionales." : "");
+      const todas = f.querySelector("#mTodas");
+      const tenias = (t === "venta" || (tras && conUnid)) && p && f.elements.fecha.value ? teniasEl(p.id, f.elements.fecha.value) : 0;
+      todas.hidden = !(tenias > 0);
+      f.querySelector("#mPistaU").hidden = tenias > 0;
+      if (tenias > 0) { todas.dataset.valor = decimal(tenias); todas.textContent = `Todas (${decimal(tenias)})`; }
       const u = leeNum(f.elements.unidades.value), imp = leeNum(f.elements.importe.value);
-      const com = leeNum(f.elements.comision.value) || 0;
+      const com = tras ? 0 : (leeNum(f.elements.comision.value) || 0);
       $("#mPrecio").textContent = conUnid && u > 0 && imp > 0 ? `${num((imp - com) / u)} € / unidad` : "";
     };
     f.oninput = ajusta;
@@ -473,6 +536,7 @@
           <button data-acc="borrarValor" data-id="${esc(v.id)}">Borrar</button></td></tr>`).join("");
       return `<section class="tarjeta saldo"><header><h2><i class="pt" style="background:var(--s${p.slot || 1})"></i>${esc(nombre(p))}</h2>
           <span class="subt">${esc(E.tipos[p.tipo] || "")}${p.entidad ? " · " + esc(p.entidad) : ""}</span><span class="sp"></span>
+          ${p.tipo === "efectivo" ? `<button class="btn" data-acc="nuevoInteres" data-id="${esc(p.id)}">+ Interés</button>` : ""}
           <button class="btn" data-acc="nuevoValor" data-id="${esc(p.id)}">+ Anotar</button></header>
         ${filas ? `<div class="tablaEnv"><table class="dt"><thead><tr><th>Fecha</th><th>${etiquetaValor(p)}</th>
           ${conAportado ? "<th>Aportado</th>" : ""}<th></th></tr></thead><tbody>${filas}</tbody></table></div>`
@@ -545,6 +609,7 @@
   const IMP = { origen: "myinvestor", informe: null, token: null, hecho: null, prompt: null, archivos: [] };
   const ICONOS = {
     myinvestor: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M5 21V10l7-5 7 5v11M9 21v-6h6v6"/></svg>',
+    traderepublic: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg>',
     plantilla: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/></svg>',
     ia: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 17l.8 2.2L22 20l-2.2.8L19 23l-.8-2.2L16 20l2.2-.8z"/></svg>',
   };
@@ -570,6 +635,13 @@
         ${zona(".csv", true, "Arrastra aquí los CSV de MyInvestor")}
         <p class="ayuda">Cada importación sustituye lo que importaste antes de ese mismo fondo: repítela cada mes sin miedo a duplicar.
           MyInvestor no permite descargar las órdenes de ETF o acciones: haz capturas y usa la opción «Con ayuda de una IA».</p>`;
+    } else if (IMP.origen === "traderepublic") {
+      paso = `<ol class="pasos">
+          <li>En la web de Trade Republic, exporta tus transacciones en CSV <b>desde que abriste la cuenta</b>.</li>
+          <li>No lo abras ni le cambies nada. Arrástralo aquí.</li></ol>
+        ${zona(".csv", false, "Arrastra aquí el CSV de Trade Republic")}
+        <p class="ayuda">Se importan compras, ventas, intereses y el saldo de efectivo. Tarjeta, transferencias y saveback no se guardan
+          (solo cuentan para calcular el saldo). Puedes repetirlo con un archivo que se solape: lo ya importado no se duplica.</p>`;
     } else if (IMP.origen === "plantilla") {
       paso = `<ol class="pasos">
           <li>Descarga la plantilla: <a class="btn" href="api/plantilla.xlsx" download>Excel</a>
@@ -592,6 +664,7 @@
         <span class="subt">Trae tus movimientos de golpe. Antes de guardar nada verás una vista previa.</span></header>
       <div class="imOps">
         ${op("myinvestor", "MyInvestor", "El CSV de cada fondo")}
+        ${op("traderepublic", "Trade Republic", "El CSV de transacciones")}
         ${op("plantilla", "Plantilla", "Excel o CSV, para cualquier banco")}
         ${op("ia", "Con ayuda de una IA", "Convierte el extracto de tu banco")}
       </div>
@@ -665,10 +738,17 @@
         <span>${esc(E.fuentes[p.fuente])}</span>${p.precio ? `<span>${num(p.precio)} ${esc(p.monedaPrecio)} · ${fecha(p.fechaPrecio)}</span>` : ""}</span></div>`).join("")}</div>` : "";
     const ESTADO = { nuevo: "Nuevo", repetido: "Ya estaba", error: "Con error" };
     const filas = inf.filas.map(f => `<tr class="est-${f.estado}"><td>${fecha(f.fecha)}</td>
-      <td style="text-align:left">${esc(f.productoNombre)}</td><td style="text-align:left">${esc(E.tiposMov[f.tipo] || "Saldo")}</td>
+      <td style="text-align:left">${esc(f.productoNombre)}${f.destinoNombre ? " → " + esc(f.destinoNombre) : ""}</td><td style="text-align:left">${esc(E.tiposMov[f.tipo] || "Saldo")}</td>
       <td>${f.unidades ? num(f.unidades) : "—"}</td><td>${eur(f.importe)}</td>
       <td style="text-align:left">${f.marcas.map(m => `<span class="etqImp">${esc(m)}</span>`).join("")}</td>
       <td><span class="estado">${ESTADO[f.estado]}</span></td></tr>`).join("");
+    const rs = inf.resumen;
+    const ign = rs ? Object.entries(rs.ignoradas).map(([k, v]) => `${v} ${esc(k)}`).join(" · ") : "";
+    const resumenTR = rs ? `<div class="cifras" style="margin-top:10px">
+        ${cifra("En el archivo", rs.filas, "filas")}${cifra("Compras", rs.compras)}${cifra("Ventas", rs.ventas)}
+        ${cifra("Intereses", rs.intereses)}${cifra("Traspasos", rs.traspasos)}
+        ${cifra("Saldo calculado", eur(rs.saldo))}</div>
+      ${ign ? `<p class="ayuda">No se importan (solo cuentan en el saldo): ${ign}.</p>` : ""}` : "";
     return `<section class="tarjeta"><header><h2>Vista previa</h2>
         <span class="subt">Todavía no se ha guardado nada.</span></header>
       <div class="cifras">
@@ -679,6 +759,7 @@
         ${inf.repetidos ? cifra("Ya estaban", inf.repetidos, "se omiten") : ""}
         ${inf.sustituidos ? cifra("Sustituyen a", inf.sustituidos, "importados antes") : ""}
       </div>
+      ${resumenTR}
       <div class="comprueba"><b>Compara estas cifras con tu banco antes de confirmar.</b>
         ${IMP.origen === "ia" ? "Una IA puede equivocarse al copiar números o saltarse alguna fila: revisa sobre todo el total invertido." : ""}</div>
       ${avisos}${errores}${nuevos}
@@ -810,6 +891,7 @@
     editarMov: soloPropio(id => formMovimiento(E.cfg.movimientos.find(m => m.id === id))),
     borrarMov: soloPropio(borrarMov),
     nuevoValor: soloPropio(id => formValor(null, id)),
+    nuevoInteres: soloPropio(id => formMovimiento(null, id, "interes")),
     editarValor: soloPropio(id => formValor(E.cfg.valoraciones.find(v => v.id === id))),
     borrarValor: soloPropio(borrarValor),
     todosValores: soloPropio(todosValores),

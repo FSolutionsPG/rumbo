@@ -18,6 +18,7 @@ import datetime as dt
 import io
 import re
 import unicodedata
+from decimal import Decimal, InvalidOperation
 
 from . import almacen, buscar, motor
 from .motor import num_es, valor_en
@@ -41,7 +42,8 @@ SINONIMOS = {
 TIPO_MOV = {
     "compra": "compra", "suscripcion": "compra", "buy": "compra", "aportacion": "compra",
     "venta": "venta", "reembolso": "venta", "sell": "venta",
-    "dividendo": "dividendo", "cupon": "dividendo", "dividend": "dividendo", "interes": "dividendo",
+    "dividendo": "dividendo", "cupon": "dividendo", "dividend": "dividendo",
+    "interes": "interes", "intereses": "interes",
     "comision": "comision", "fee": "comision", "custodia": "comision",
     "saldo": "saldo", "valor": "saldo", "valoracion": "saldo",
 }
@@ -221,7 +223,9 @@ def lee_fecha(v):
         return None
 
 
-def lee_numero(v):
+def lee_numero(v, punto_decimal=False, avisos=None):
+    """punto_decimal: ninguna cifra de la tabla lleva coma, así que el punto es decimal.
+    Si eso cambia un valor con forma de millar ('1.250'), se anota en `avisos` (una lista)."""
     if v is None or (isinstance(v, str) and not v.strip()):
         return None
     if isinstance(v, (int, float)):
@@ -229,7 +233,25 @@ def lee_numero(v):
     t = str(v).strip().replace("€", "").replace("$", "").replace(" ", "")
     if not re.fullmatch(r"[-+]?[\d.,]+", t):
         return "error"
+    if punto_decimal and "," not in t and t.count(".") == 1:
+        try:
+            x = abs(float(t))
+        except ValueError:
+            return abs(num_es(t))
+        if avisos is not None and re.fullmatch(motor.MILES_ES, t.lstrip("+")):
+            avisos.append(t)
+        return x
     return abs(num_es(t))
+
+
+def _punto_es_decimal(filas):
+    """True si ninguna cifra de texto de la tabla lleva coma (lo que pide el prompt de la IA)."""
+    for _, f in filas:
+        for k in ("importe", "unidades", "comision"):
+            v = f.get(k)
+            if isinstance(v, str) and "," in v:
+                return False
+    return True
 
 
 # ---------------------------------------------------------------- preparar el plan
@@ -244,6 +266,7 @@ class Plan:
         self.reemplazar = []         # [(producto id o ref, origen)]: se borran sus importados previos
         self.errores = []            # [{"fila", "mensaje"}]
         self.avisos = []
+        self.resumen = None          # solo Trade Republic: recuentos para comparar con la app
 
     def error(self, fila, mensaje):
         self.errores.append({"fila": fila, "mensaje": mensaje})
@@ -269,7 +292,7 @@ class Resolutor:
         self.cfg, self.plan, self.carpeta = cfg, plan, carpeta
         self.cache, self.series, self.frescas = {}, {}, set()
 
-    def producto(self, fila, identificador, nombre, tipo_prod):
+    def producto(self, fila, identificador, nombre, tipo_prod, preferir=None):
         clave = ((identificador or "").strip().upper(), sin_tildes(nombre) if not identificador else "")
         if clave in self.cache:
             return self.cache[clave]
@@ -287,7 +310,8 @@ class Resolutor:
                                       "con intentarlo otra vez.")
                 ref = None
             elif res:
-                r = res[0]
+                # 'preferir': el tipo que ya sabe el extracto (un ticker como BTC también es un ETF).
+                r = next((x for x in res if x["tipo"] == preferir), res[0])
                 fi = r.get("ficha") or {}
                 datos = {"nombre": nombre or r.get("nombre") or r["codigo"], "tipo": r["tipo"],
                          "identificador": identificador.strip(), "fuente": r["fuente"], "codigo": r["codigo"],
@@ -338,22 +362,27 @@ def preparar_tabla(cfg, filas, carpeta):
     plan = Plan()
     res = Resolutor(cfg, plan, carpeta)
     cambios = {}
+    punto = _punto_es_decimal(filas)
+    leidos = []
     for n, f in filas:
         fecha = lee_fecha(f.get("fecha"))
         tipo = TIPO_MOV.get(sin_tildes(f.get("tipo_movimiento")))
         ident = str(f.get("identificador") or "").strip()
         nombre = str(f.get("nombre") or "").strip()
         tprod = TIPO_PROD.get(sin_tildes(f.get("tipo_producto")), "")
-        importe, unidades, comision = (lee_numero(f.get(k)) for k in ("importe", "unidades", "comision"))
+        importe, unidades, comision = (lee_numero(f.get(k), punto, leidos) for k in ("importe", "unidades", "comision"))
         moneda = (str(f.get("moneda") or "").strip() or "EUR").upper()
         nota = str(f.get("nota") or "").strip()
 
         if not fecha:
             plan.error(n, f"La fecha «{f.get('fecha') or ''}» no es válida. Usa el formato 2025-03-10 o 10/03/2025.")
             continue
+        if not tipo and sin_tildes(f.get("tipo_movimiento")) in ("traspaso", "traspasos", "transfer"):
+            plan.error(n, "Los traspasos se anotan en Mis datos → Movimientos.")
+            continue
         if not tipo:
             plan.error(n, f"El tipo de movimiento «{f.get('tipo_movimiento') or ''}» no es válido: "
-                          "usa compra, venta, dividendo, comision o saldo.")
+                          "usa compra, venta, dividendo, interes, comision o saldo.")
             continue
         if "error" in (importe, unidades, comision):
             plan.error(n, "Algún número no se entiende (importe, unidades o comisión).")
@@ -364,11 +393,18 @@ def preparar_tabla(cfg, filas, carpeta):
         if not ident and not nombre:
             plan.error(n, "No tiene identificador: pon el ISIN o el ticker (o, si es una cuenta, su nombre).")
             continue
-        if tipo == "saldo" and not ident:
+        if tipo in ("saldo", "interes") and not ident:
             tprod = tprod or "efectivo"
         ref = res.producto(n, ident, nombre, tprod)
         if not ref:
             continue
+        if tipo == "interes":
+            # Interés de una cuenta remunerada -> «interes»; en cualquier otro producto
+            # (cupón de un bono, por ejemplo) sigue siendo un dividendo.
+            if (res.datos(ref) or {}).get("tipo") == "efectivo":
+                unidades, comision = None, None
+            else:
+                tipo = "dividendo"
         marcas = []
 
         # Importes en otra moneda: se pasan a euros con el cambio de ese día.
@@ -402,7 +438,18 @@ def preparar_tabla(cfg, filas, carpeta):
                                  "unidades": unidades, "importe": round(importe, 2),
                                  "comision": round(comision, 2) if comision else None,
                                  "nota": nota, "marcas": marcas, "origen": "importado"})
+    if leidos:
+        ej = leidos[0]
+        plan.avisos.append(f"He leído el punto como decimal ({ej} = {_en_palabras(ej)}). Si tu archivo usa "
+                           "el punto para los miles, revisa los totales antes de importar.")
     return plan
+
+
+def _en_palabras(t):
+    """'1.250' -> 1,25 (sin ceros finales); solo para el aviso."""
+    ent, dec = t.lstrip("-+").split(".")
+    dec = dec.rstrip("0")
+    return f"{ent},{dec}" if dec else ent
 
 
 def preparar_myinvestor(cfg, archivos, carpeta):
@@ -441,6 +488,240 @@ def preparar_myinvestor(cfg, archivos, carpeta):
     return plan
 
 
+# ---------------------------------------------------------------- Trade Republic
+
+CAB_TR = ("datetime", "date", "category", "type", "asset_class", "name", "symbol",
+          "shares", "price", "amount", "fee", "tax")
+NOMBRE_CUENTA_TR = "Trade Republic (efectivo)"
+# Filas que NO crean movimientos (pero sí cuentan para el saldo de efectivo).
+IGNORADAS_TR = ("CARD_TRANSACTION", "TRANSFER_INSTANT_INBOUND", "TRANSFER_INBOUND",
+                "TRANSFER_INSTANT_OUTBOUND", "TRANSFER_OUTBOUND", "BENEFITS_SAVEBACK", "MIGRATION")
+TIPO_ACTIVO_TR = {"MUTUAL_FUND": "fondo", "FUND": "etf", "CRYPTO": "cripto", "STOCK": "accion"}
+MARCA_TRASPASO = ("Parece un traspaso entre fondos (mismo valor, sin pasar por efectivo). "
+                  "Si fue una venta y una compra, anótalo a mano.")
+DIAS_TRASPASO, TOLERANCIA_TRASPASO = 5, Decimal("0.01")
+
+
+def _dec(v):
+    """Texto -> Decimal; vacío -> None; algo que no es un número -> ValueError."""
+    t = str(v or "").strip()
+    if not t:
+        return None
+    try:
+        return Decimal(t)
+    except InvalidOperation:
+        raise ValueError(t)
+
+
+def saldo_efectivo_tr(filas):
+    """
+    Saldo de la cuenta de efectivo de Trade Republic = suma de amount + fee + tax de TODAS las
+    filas del fichero (las columnas vacías cuentan 0), también tarjeta, transferencias,
+    saveback y compraventas.
+
+    Convención de signos (PENDIENTE de confirmar por el dueño): amount ya viene con su signo
+    (compra negativa, venta positiva bruta, ingreso positivo) y fee y tax vienen negativos, así
+    que se SUMAN tal cual. Con el CSV real da 789,96 EUR, la cifra que enseña la app.
+    Solo es correcto si el fichero empieza el día de la apertura de la cuenta.
+    """
+    total = Decimal(0)
+    for f in filas:
+        for k in ("amount", "fee", "tax"):
+            total += _dec(f.get(k)) or 0
+    return total
+
+
+def _fmt_eur(x):
+    return almacen.fmt_num(float(x), 2) + " €"
+
+
+def _empareja_traspasos(vacias):
+    """
+    vacias = filas BUY/SELL de TRADING sin amount. Une cada venta con la compra de OTRO ISIN
+    hecha 0-5 días después cuyo valor (shares x price) coincide con ±1 %. Elige las parejas de
+    menor diferencia de valor y usa cada fila una sola vez. Devuelve ([(venta, compra)], sin pareja).
+    """
+    def valor(f):
+        return abs(_dec(f["shares"]) * _dec(f["price"]))
+    posibles = []
+    ventas = [f for f in vacias if f["type"] == "SELL"]
+    compras = [f for f in vacias if f["type"] == "BUY"]
+    for v in ventas:
+        for c in compras:
+            dias = (dt.date.fromisoformat(c["date"]) - dt.date.fromisoformat(v["date"])).days
+            if c["symbol"] == v["symbol"] or not 0 <= dias <= DIAS_TRASPASO:
+                continue
+            vv, vc = valor(v), valor(c)
+            if vv and abs(vv - vc) <= TOLERANCIA_TRASPASO * vv:
+                posibles.append((abs(vv - vc), dias, id(v), id(c), v, c))
+    usadas, parejas = set(), []
+    for _, _, _, _, v, c in sorted(posibles, key=lambda x: x[:4]):
+        if id(v) in usadas or id(c) in usadas:
+            continue
+        usadas.update((id(v), id(c)))
+        parejas.append((v, c))
+    return parejas, [f for f in vacias if id(f) not in usadas]
+
+
+def leer_csv_tr(nombre, contenido):
+    """CSV de Trade Republic -> ([fila con 'n' = línea del archivo], error). Comprueba la cabecera."""
+    texto = decodifica(contenido)
+    lector = csv.DictReader(io.StringIO(texto))
+    faltan = [c for c in CAB_TR if c not in (lector.fieldnames or [])]
+    if faltan:
+        return [], ("No parece el CSV de transacciones de Trade Republic: en la cabecera faltan las columnas "
+                    + ", ".join(faltan) + ". Expórtalo de la web de Trade Republic sin abrirlo ni cambiarlo.")
+    filas = []
+    for n, f in enumerate(lector, start=2):
+        f = {k: (v or "").strip() for k, v in f.items() if k}
+        f["n"] = n
+        filas.append(f)
+    return filas, None
+
+
+def preparar_traderepublic(cfg, archivos, carpeta):
+    """[(nombre, bytes)] del CSV de transacciones de Trade Republic -> Plan.
+    Importa compras, ventas, intereses y el saldo de efectivo; el resto solo cuenta para el saldo.
+    De description, counterparty e IBAN no se lee nada."""
+    plan = Plan()
+    res = Resolutor(cfg, plan, carpeta)
+    filas, vistos = [], set()
+    for nombre, contenido in archivos:
+        leidas, error = leer_csv_tr(nombre, contenido)
+        if error:
+            plan.error(nombre, error)
+            continue
+        for f in leidas:
+            tid = f.get("transaction_id")
+            if tid and tid in vistos:
+                continue            # dos archivos que se solapan: la misma operación no cuenta dos veces
+            vistos.add(tid)
+            f["archivo"] = nombre if len(archivos) > 1 else None
+            filas.append(f)
+    if not filas:
+        if not plan.errores:
+            plan.error(archivos[0][0] if archivos else "", "El archivo no tiene ninguna transacción.")
+        return plan
+    filas.sort(key=lambda f: (f.get("datetime") or f["date"], f["n"]))
+
+    resumen = {"compras": 0, "ventas": 0, "intereses": 0, "traspasos": 0, "ignoradas": {}, "filas": len(filas)}
+    plan.resumen = resumen
+
+    def fila_de(f):
+        return f["n"] if not f["archivo"] else f"{f['archivo']} · fila {f['n']}"
+
+    # 1. Qué hace cada fila.
+    trading, intereses = [], []
+    for f in filas:
+        f["fecha"] = lee_fecha(f.get("date"))
+        clave = f.get("type")
+        if f.get("category") == "TRADING" and clave in ("BUY", "SELL"):
+            trading.append(f)
+        elif clave == "INTEREST_PAYMENT":
+            intereses.append(f)
+        else:
+            resumen["ignoradas"][clave] = resumen["ignoradas"].get(clave, 0) + 1
+            if clave not in IGNORADAS_TR:
+                plan.avisos.append(f"Tipo de fila desconocido «{clave}»: no se importa, pero cuenta en el saldo.")
+    plan.avisos = list(dict.fromkeys(plan.avisos))
+
+    # 2. Cambios entre fondos: BUY y SELL sin amount que se emparejan.
+    validas, vacias = [], []
+    for f in trading:
+        try:
+            if not f["fecha"]:
+                raise ValueError("fecha")
+            if _dec(f.get("amount")) is None:
+                if _dec(f.get("shares")) is None or _dec(f.get("price")) is None:
+                    raise ValueError("sin importe")
+                vacias.append(f)
+            else:
+                if _dec(f.get("shares")) is None:
+                    raise ValueError("sin unidades")
+                validas.append(f)
+        except ValueError:
+            plan.error(fila_de(f), "No entiendo la fecha o algún número de esta fila: no se importa.")
+    parejas, sin_pareja = _empareja_traspasos(vacias)
+    for f in sin_pareja:
+        plan.error(fila_de(f), "Compra o venta sin importe y sin pareja que parezca un traspaso entre fondos "
+                               "(otro fondo, hasta 5 días después y del mismo valor). No se inventa el importe: anótala a mano.")
+
+    nombre_de = lambda f: f.get("name") or f["symbol"]
+
+    def producto(f):
+        ident = f["symbol"]
+        tipo = TIPO_ACTIVO_TR.get(f.get("asset_class"), "otro")
+        if not ident:
+            plan.error(fila_de(f), "No trae símbolo (ISIN): no sé de qué producto es.")
+            return None
+        ref = res.producto(fila_de(f), ident, nombre_de(f), tipo, preferir=tipo)
+        if ref and ref.startswith("nuevo:"):
+            res.datos(ref)["tipo"] = tipo      # TR sabe qué es; la búsqueda a veces lo clasifica distinto
+        return ref
+
+    # 3. Compras y ventas con importe.
+    for f in validas:
+        ref = producto(f)
+        if not ref:
+            continue
+        shares, amount = _dec(f["shares"]), _dec(f["amount"])
+        fee, tax = abs(_dec(f.get("fee")) or 0), abs(_dec(f.get("tax")) or 0)
+        base = {"fila": fila_de(f), "producto": ref, "fecha": f["fecha"], "marcas": [], "origen": "importado"}
+        if f["type"] == "BUY":
+            plan.movimientos.append({**base, "tipo": "compra", "unidades": float(abs(shares)),
+                                     "importe": float(abs(amount) + fee), "comision": float(fee) or None,
+                                     "nota": "Trade Republic"})
+            resumen["compras"] += 1
+        else:
+            nota = "Trade Republic" + (f" · retención {_fmt_eur(tax)}" if tax else "")
+            plan.movimientos.append({**base, "tipo": "venta", "unidades": float(abs(shares)),
+                                     "importe": float(amount - fee - tax), "comision": float(fee) or None,
+                                     "nota": nota})
+            resumen["ventas"] += 1
+
+    # 4. Traspasos entre fondos.
+    for v, c in parejas:
+        origen, destino = producto(v), producto(c)
+        if not origen or not destino:
+            continue
+        plan.movimientos.append({"fila": fila_de(v), "producto": origen, "destino": destino, "fecha": v["fecha"],
+                                 "tipo": "traspaso", "unidades": float(abs(_dec(v["shares"]))),
+                                 "unidadesDestino": float(abs(_dec(c["shares"]))),
+                                 "importe": float(abs(_dec(v["shares"]) * _dec(v["price"]))),
+                                 "comision": None, "nota": "Trade Republic", "marcas": [MARCA_TRASPASO],
+                                 "origen": "importado"})
+        resumen["traspasos"] += 1
+    if parejas:
+        plan.avisos.append(f"{len(parejas)} {'cambio' if len(parejas) == 1 else 'cambios'} entre fondos "
+                           "importado(s) como traspaso: revísalo(s) en la tabla (marcados).")
+
+    # 5. Cuenta de efectivo: intereses y saldo.
+    ref_cuenta = res.producto("efectivo", "", NOMBRE_CUENTA_TR, "efectivo")
+    for f in intereses:
+        try:
+            neto = _dec(f.get("amount")) - abs(_dec(f.get("tax")) or 0)
+            if not f["fecha"] or neto <= 0:
+                raise ValueError("interés")
+        except (ValueError, TypeError):
+            plan.error(fila_de(f), "No entiendo este interés (fecha o importe): no se importa.")
+            continue
+        plan.movimientos.append({"fila": fila_de(f), "producto": ref_cuenta, "fecha": f["fecha"], "tipo": "interes",
+                                 "unidades": None, "importe": float(neto), "comision": None,
+                                 "nota": "Trade Republic (neto de retención)", "marcas": [], "origen": "importado"})
+        resumen["intereses"] += 1
+    try:
+        saldo = saldo_efectivo_tr(filas)
+    except ValueError:
+        plan.error("saldo", "Alguna cifra de amount, fee o tax no es un número: no puedo calcular el saldo.")
+        return plan
+    resumen["saldo"] = float(saldo)
+    ultima = max(f["fecha"] for f in filas if f["fecha"])
+    plan.valoraciones.append({"fila": "saldo", "producto": ref_cuenta, "fecha": ultima, "valor": float(round(saldo, 2))})
+    plan.avisos.append(f"Saldo calculado: {_fmt_eur(saldo)}. Compáralo con el efectivo que te enseña Trade Republic; "
+                       "solo es correcto si el archivo empieza el día que abriste la cuenta.")
+    return plan
+
+
 # ---------------------------------------------------------------- aplicar
 
 def aplicar(cfg, plan):
@@ -460,14 +741,16 @@ def aplicar(cfg, plan):
 
     def firma(m):
         return (m["producto"], m["fecha"], m["tipo"], round(float(m.get("unidades") or 0), 4),
-                round(float(m.get("importe") or 0), 2))
+                round(float(m.get("importe") or 0), 2), m.get("destino"))
     existentes = {firma(m) for m in cfg["movimientos"]}
 
     añadidos, duplicados, filas = 0, 0, []
-    orden = {"compra": 0, "comision": 1, "dividendo": 2, "venta": 3}
-    for mv in sorted(plan.movimientos, key=lambda m: (m["fecha"], orden.get(m["tipo"], 9))):
-        datos = {k: mv[k] for k in ("fecha", "tipo", "unidades", "importe", "comision", "nota") if mv.get(k) is not None}
+    for mv in sorted(plan.movimientos, key=lambda m: (m["fecha"], motor.ORDEN_TIPO.get(m["tipo"], 9))):
+        datos = {k: mv[k] for k in ("fecha", "tipo", "unidades", "importe", "comision", "nota",
+                                    "unidadesDestino") if mv.get(k) is not None}
         datos["producto"] = real(mv["producto"])
+        if mv.get("destino"):
+            datos["destino"] = real(mv["destino"])
         estado = "nuevo"
         if firma({**datos, "unidades": datos.get("unidades", 0)}) in existentes:
             duplicados += 1
@@ -482,7 +765,7 @@ def aplicar(cfg, plan):
                 estado = "error"
         filas.append({"fila": mv["fila"], "fecha": mv["fecha"], "producto": datos["producto"], "tipo": mv["tipo"],
                       "unidades": mv.get("unidades"), "importe": mv["importe"], "marcas": mv["marcas"],
-                      "estado": estado})
+                      "destino": datos.get("destino"), "estado": estado})
 
     saldos = 0
     for v in plan.valoraciones:
@@ -499,10 +782,11 @@ def aplicar(cfg, plan):
     nombres = {p["id"]: p.get("corto") or p["nombre"] for p in cfg["productos"]}
     for f in filas:
         f["productoNombre"] = nombres.get(f["producto"], f["producto"])
+        f["destinoNombre"] = nombres.get(f.get("destino"))
     return {
         "añadidos": añadidos, "repetidos": duplicados, "saldos": saldos, "sustituidos": sustituidos,
         "errores": sorted(errores, key=lambda e: (str(type(e["fila"])), str(e["fila"]).zfill(6))),
-        "avisos": plan.avisos,
+        "avisos": plan.avisos, "resumen": plan.resumen,
         "totales": {"compras": total("compra"), "ventas": total("venta"),
                     "dividendos": total("dividendo"), "comisiones": total("comision"),
                     "numCompras": sum(1 for f in filas if f["tipo"] == "compra" and f["estado"] == "nuevo")},

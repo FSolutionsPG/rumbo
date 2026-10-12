@@ -97,11 +97,22 @@
   }
 
   function etiquetaEjeX(fechas, i, n) {
-    const f = fechas[i];
-    const dias = n;
-    if (dias > 400) return `${MESES[+f.split("-")[1] - 1]} ${f.split("-")[0].slice(2)}`;
-    if (dias > 70) return `${MESES[+f.split("-")[1] - 1]} ${f.split("-")[0].slice(2)}`;
-    return `${+f.split("-")[2]} ${MESES[+f.split("-")[1] - 1]}`;
+    const q = fechas[i].split("-");
+    // Hasta ~120 puntos (unos 4 meses) caben dias; con mas, mes y año.
+    if (n > 120) return `${MESES[+q[1] - 1]} ${q[0].slice(2)}`;
+    return `${+q[2]} ${MESES[+q[1] - 1]}`;
+  }
+
+  /** Etiquetas del eje X; no repite el mismo texto en dos marcas seguidas. */
+  function pintaEjeX(svg, fechas, n, W, x, H) {
+    let previa = null;
+    indicesEjeX(n, W < 520 ? 4 : 7).forEach(i => {
+      const t = etiquetaEjeX(fechas, i, n);
+      if (t === previa) return;
+      previa = t;
+      svg.appendChild(txt(x(i), H - 8, t, "ejeX",
+        { "text-anchor": i === 0 ? "start" : i === n - 1 ? "end" : "middle" }));
+    });
   }
 
   /* -------------------------------------------------- tooltip */
@@ -190,10 +201,7 @@
     }
     // ejes
     svg.appendChild(el("line", { x1: P.l, x2: W - P.r, y1: P.t + ih, y2: P.t + ih, class: "eje" }));
-    indicesEjeX(n, W < 520 ? 4 : 7).forEach(i => {
-      svg.appendChild(txt(x(i), H - 8, etiquetaEjeX(fechas, i, n), "ejeX",
-        { "text-anchor": i === 0 ? "start" : i === n - 1 ? "end" : "middle" }));
-    });
+    pintaEjeX(svg, fechas, n, W, x, H);
 
     // crosshair
     const g = el("g", { class: "cursor", opacity: 0 });
@@ -316,10 +324,7 @@
     });
 
     svg.appendChild(el("line", { x1: P.l, x2: W - P.r, y1: P.t + ih, y2: P.t + ih, class: "eje" }));
-    indicesEjeX(n, W < 520 ? 4 : 7).forEach(i => {
-      svg.appendChild(txt(x(i), H - 8, etiquetaEjeX(fechas, i, n), "ejeX",
-        { "text-anchor": i === 0 ? "start" : i === n - 1 ? "end" : "middle" }));
-    });
+    pintaEjeX(svg, fechas, n, W, x, H);
 
     const g = el("g", { class: "cursor", opacity: 0 });
     const linea = el("line", { y1: P.t, y2: P.t + ih, class: "crosshair" });
@@ -632,10 +637,7 @@
       }));
     });
     svg.appendChild(el("line", { x1: P.l, x2: W - P.r, y1: P.t + ih, y2: P.t + ih, class: "eje" }));
-    indicesEjeX(n, W < 520 ? 4 : 7).forEach(i => {
-      svg.appendChild(txt(x(i), H - 8, etiquetaEjeX(fechas, i, n), "ejeX",
-        { "text-anchor": i === 0 ? "start" : i === n - 1 ? "end" : "middle" }));
-    });
+    pintaEjeX(svg, fechas, n, W, x, H);
 
     const g = el("g", { class: "cursor", opacity: 0 });
     const linea = el("line", { y1: P.t, y2: P.t + ih, class: "crosshair" });
