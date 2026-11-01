@@ -1,3 +1,7 @@
+* text=auto eol=lf
 *.bat text eol=crlf
 *.command text eol=lf
 *.py text eol=lf
+*.png binary
+*.ico binary
+uv.lock linguist-generated=true

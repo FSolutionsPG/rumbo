@@ -16,7 +16,7 @@ from .motor import TIPOS, FUENTES, num_es
 
 COPIAS_MAX = 20
 TIPOS_MOV = {"compra": "Compra", "venta": "Venta", "dividendo": "Dividendo o cupón",
-             "comision": "Comisión"}
+             "comision": "Comisión", "traspaso": "Traspaso", "interes": "Interés"}
 SOLO_SALDO = ("efectivo", "deuda")   # tipos que se siguen solo con saldos anotados
 
 CARTERA_VACIA = {
@@ -65,9 +65,9 @@ def fmt_fecha(iso):
     return f"{iso[8:10]}/{iso[5:7]}/{iso[:4]}"
 
 
-def fmt_num(x):
-    """12345.6 -> '12.345,6' (hasta 4 decimales, sin ceros de sobra)."""
-    t = f"{x:,.4f}".rstrip("0").rstrip(".")
+def fmt_num(x, decimales=4):
+    """12345.6 -> '12.345,6' (hasta 4 decimales por defecto, sin ceros de sobra)."""
+    t = f"{x:,.{decimales}f}".rstrip("0").rstrip(".")
     return t.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
@@ -164,6 +164,10 @@ def guarda_producto(cfg, datos):
                  slot=int(datos["slot"]) if str(datos.get("slot") or "").isdigit() else None,
                  ter=ter / 100 if ter is not None else None,
                  riesgo=int(riesgo) if riesgo is not None else None)
+    # «Archivado» solo cambia si el formulario lo manda: al importar o editar otros campos
+    # se conserva el que tenía (False y ausente son lo mismo, y no se guarda).
+    if "archivado" in datos:
+        nuevo["archivado"] = True if datos["archivado"] in (True, "true", "1", 1) else None
     if fuente == "manual":
         nuevo.update(codigo="", respaldo="", respaldoMoneda="")
     nuevo["corto"] = nuevo["corto"] or nuevo["nombre"][:24]
@@ -204,6 +208,12 @@ def borra_producto(cfg, pid):
     """Borra el producto con sus movimientos y valores anotados."""
     if not producto(cfg, pid):
         raise ErrorValidacion(["Ese producto ya no existe."])
+    for m in cfg.get("movimientos", []):
+        if m.get("tipo") == "traspaso" and m.get("destino") == pid and m.get("producto") != pid:
+            origen = producto(cfg, m.get("producto")) or {}
+            nombre = origen.get("corto") or origen.get("nombre") or m.get("producto")
+            raise ErrorValidacion([f"Este producto recibe un traspaso desde «{nombre}». "
+                                   "Borra antes ese traspaso."])
     cfg["productos"] = [p for p in cfg["productos"] if p["id"] != pid]
     cfg["movimientos"] = [m for m in cfg.get("movimientos", []) if m.get("producto") != pid]
     cfg["valoraciones"] = [v for v in cfg.get("valoraciones", []) if v.get("producto") != pid]
@@ -222,8 +232,54 @@ def unidades_a(cfg, pid, fecha_iso, excluir=None):
         if m.get("producto") != pid or m.get("id") == excluir or m["fecha"] > fecha_iso:
             continue
         u = float(m.get("unidades") or 0)
-        total += u if m.get("tipo") == "compra" else -u if m.get("tipo") == "venta" else 0
+        total += u if m.get("tipo") == "compra" else -u if m.get("tipo") in ("venta", "traspaso") else 0
+    # Lo que te llega por traspaso desde otro producto.
+    for m in cfg.get("movimientos", []):
+        if (m.get("tipo") == "traspaso" and m.get("destino") == pid and m.get("producto") != pid
+                and m.get("id") != excluir and m["fecha"] <= fecha_iso):
+            total += float(m.get("unidadesDestino") or 0)
     return total
+
+
+def _nombre(p):
+    return p.get("corto") or p["nombre"]
+
+
+def _valida_traspaso(cfg, datos, origen, errores):
+    """Producto destino y unidades que entran en él (0 si el destino se valora a mano)."""
+    destino = producto(cfg, datos.get("destino"))
+    if not datos.get("destino"):
+        errores.append("Elige el producto al que traspasas.")
+        return None, 0.0
+    if not destino:
+        errores.append("El producto destino ya no existe.")
+        return None, 0.0
+    if origen and destino["id"] == origen["id"]:
+        errores.append("El traspaso tiene que ir a otro producto distinto del de origen.")
+    elif destino.get("tipo") in SOLO_SALDO:
+        errores.append(f"«{_nombre(destino)}» se sigue con saldos: no puede recibir un traspaso.")
+    uds = 0.0
+    if destino.get("fuente") != "manual":
+        uds = numero(datos.get("unidadesDestino"), "cuántas unidades entran en el destino", errores,
+                     mayor_que=0) or 0.0
+    return destino, uds
+
+
+def _unidades_que_salen(cfg, datos, p, f, cotiza, errores):
+    """Unidades que salen del origen. Sin unidades (producto a mano) el traspaso es total
+    y se guarda 0. Con el mismo ajuste de «vender todo» que las ventas."""
+    if not p or not cotiza:
+        return 0.0
+    unidades = numero(datos.get("unidades"), "cuántas unidades salen", errores, mayor_que=0) or 0.0
+    if errores or not unidades:
+        return unidades
+    tenias = unidades_a(cfg, p["id"], f, excluir=datos.get("id"))
+    if tenias > 0 and abs(unidades - tenias) <= 0.00005:
+        return tenias
+    if unidades > tenias + 1e-6:
+        errores.append(f"El {fmt_fecha(f)} solo tenías {fmt_num(tenias, 6)} unidades de "
+                       f"«{_nombre(p)}» y estás traspasando {fmt_num(unidades, 6)}.")
+    return unidades
 
 
 def guarda_movimiento(cfg, datos):
@@ -231,12 +287,16 @@ def guarda_movimiento(cfg, datos):
     p = producto(cfg, datos.get("producto"))
     if not p:
         errores.append("Elige el producto.")
-    elif p.get("tipo") in SOLO_SALDO:
+    tipo = datos.get("tipo")
+    if p and tipo == "interes":
+        if p.get("tipo") != "efectivo":
+            errores.append(f"Los intereses son de cuentas: «{p.get('corto') or p['nombre']}» no es una cuenta. "
+                           "Para fondos, acciones o bonos usa «Dividendo o cupón».")
+    elif p and p.get("tipo") in SOLO_SALDO:
         errores.append(f"«{p.get('corto') or p['nombre']}» se sigue con saldos, no con movimientos: "
                        "anótalo en «Saldos y valores».")
-    tipo = datos.get("tipo")
     if tipo not in TIPOS_MOV:
-        errores.append("Elige el tipo de movimiento: compra, venta, dividendo o comisión.")
+        errores.append("Elige el tipo de movimiento: compra, venta, dividendo, comisión, traspaso o interés.")
     f = fecha(datos.get("fecha"), errores)
     importe = numero(datos.get("importe"), "el importe", errores, mayor_que=0)
     cotiza = bool(p and p.get("fuente") != "manual")
@@ -247,20 +307,30 @@ def guarda_movimiento(cfg, datos):
     elif tipo == "venta":
         unidades = numero(datos.get("unidades"), "cuántas unidades vendiste", errores,
                           obligatorio=cotiza, minimo=0) or 0.0
+    destino, unidades_destino = None, 0.0
+    if tipo == "traspaso":
+        destino, unidades_destino = _valida_traspaso(cfg, datos, p, errores)
+        unidades = _unidades_que_salen(cfg, datos, p, f, cotiza, errores)
     comision = numero(datos.get("comision"), "la comisión", errores, obligatorio=False, minimo=0)
+    if tipo == "interes":
+        comision = None      # el interés es neto: sin unidades ni comisión
     if comision and importe and comision >= importe:
         errores.append("La comisión no puede ser mayor que el importe total.")
     if not errores and tipo == "venta" and cotiza and unidades:
         tenias = unidades_a(cfg, p["id"], f, excluir=datos.get("id"))
-        if unidades > tenias + 1e-6:
-            errores.append(f"El {fmt_fecha(f)} solo tenías {fmt_num(tenias)} unidades de "
-                           f"«{p.get('corto') or p['nombre']}» y estás vendiendo {fmt_num(unidades)}.")
+        if tenias > 0 and abs(unidades - tenias) <= 0.00005:
+            unidades = tenias      # vender todo: sin polvo residual por los decimales que no se ven
+        elif unidades > tenias + 1e-6:
+            errores.append(f"El {fmt_fecha(f)} solo tenías {fmt_num(tenias, 6)} unidades de "
+                           f"«{p.get('corto') or p['nombre']}» y estás vendiendo {fmt_num(unidades, 6)}.")
     if errores:
         raise ErrorValidacion(errores)
 
     mov = {"fecha": f, "producto": p["id"], "tipo": tipo, "unidades": round(unidades, 8),
            "importe": round(importe, 2)}
-    if comision:
+    if tipo == "traspaso":
+        mov.update(destino=destino["id"], unidadesDestino=round(unidades_destino, 8))
+    if comision and tipo != "traspaso":      # un traspaso no lleva comisión
         mov["comision"] = round(comision, 2)
     if texto(datos.get("nota")):
         mov["nota"] = texto(datos.get("nota"))

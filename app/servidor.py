@@ -17,6 +17,7 @@ import sys
 import threading
 import urllib.request
 import webbrowser
+from urllib.parse import urlsplit
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 from werkzeug.serving import make_server
@@ -34,6 +35,53 @@ HORAS_PRECIOS = 6          # al arrancar, se actualizan si tienen más de esto
 app = Flask(__name__, static_folder=None)
 app.json.sort_keys = False   # respeta el orden de tipos y listas al mandarlos al navegador
 cerrojo = threading.RLock()  # el motor no admite dos cálculos (ni dos escrituras) a la vez
+
+
+# ---------------------------------------------------------------- guarda de peticiones ajenas
+
+HOSTS_PROPIOS = ("127.0.0.1", "localhost")
+AVISO_AJENA = "Petición rechazada: no viene de la propia app."
+
+
+def _rechazo():
+    return jsonify(ok=False, errores=[AVISO_AJENA]), 403
+
+
+@app.before_request
+def guarda_peticiones_ajenas():
+    """Solo atiende a la propia app. Sin esto, cualquier web abierta en el navegador
+    podría cargar /datos.js como <script> (XSSI), leer la API tras un cambio de DNS
+    (DNS rebinding) o mandar formularios que modifican la cartera (CSRF)."""
+    # 1. Host: un nombre ajeno apuntado a 127.0.0.1 (rebinding) no entra.
+    try:
+        host = urlsplit("//" + request.host).hostname
+    except ValueError:
+        host = None
+    if host not in HOSTS_PROPIOS:
+        return _rechazo()
+    # 2. El navegador declara de dónde sale la petición; curl o un navegador viejo no la mandan.
+    sitio = request.headers.get("Sec-Fetch-Site")
+    if sitio is not None and sitio not in ("same-origin", "none"):
+        return _rechazo()
+    # 3. Las que modifican algo, además, deben venir de esta misma dirección («null» también sobra).
+    origen = request.headers.get("Origin")
+    if request.method not in ("GET", "HEAD", "OPTIONS") and origen is not None:
+        try:
+            propio = urlsplit(origen).netloc.lower() == request.host.lower()
+        except ValueError:
+            propio = False
+        if not propio:
+            return _rechazo()
+    return None
+
+
+@app.after_request
+def cabeceras_seguras(resp):
+    """Que otra web no pueda incrustar ni cargar nuestras respuestas."""
+    resp.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+    return resp
 
 
 # ---------------------------------------------------------------- archivos
@@ -229,6 +277,10 @@ def api_importar_previsualizar():
             if not archivos:
                 return jsonify(ok=False, errores=["Elige los archivos CSV que has descargado de MyInvestor."]), 400
             plan = importar.preparar_myinvestor(cfg, archivos, DATOS)
+        elif origen == "traderepublic":
+            if not archivos:
+                return jsonify(ok=False, errores=["Elige el CSV de transacciones que has exportado de Trade Republic."]), 400
+            plan = importar.preparar_traderepublic(cfg, archivos, DATOS)
         else:
             if not archivos and not texto:
                 return jsonify(ok=False, errores=["Elige un archivo o pega el texto que te ha dado la IA."]), 400
